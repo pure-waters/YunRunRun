@@ -6,3 +6,6 @@ t.py
 cfg_my.ini
 t.ipynb
 show.json
+
+# 本地凭据（含明文密码/token），不入库；模板见 config.example.ini
+config.ini

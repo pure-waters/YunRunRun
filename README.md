@@ -23,14 +23,43 @@ develop：云运动（3.6.6）自动跑步脚本，解决 master 两个老大难
 ├── history.py              历史记录查看器
 ├── tools/                  登录 / 学校地址查询 / 老漂移(弃用) / 抓包 / 路由生成 CLI
 ├── examples/routes/        合成配置样例（deform_*.json + 围栏 + dry-run 夹具）
-├── tasks_fch|txl|xc/       三个校区的打表任务表
-├── tests/                  离线测试（219 项，禁网可跑）
+├── tasks_ly/              洛阳理工学院打表任务表
+├── tests/                  离线测试（249 项，禁网可跑）
 ├── docs/                   USAGE / ARCHITECTURE / ROUTE_GENERATION / 学校目录
 ├── config.ini              唯一配置文件
 └── dry_run_home.json       dry-run 离线夹具
 ```
 
 ## 2. 更新日志
+
+- 2026-10-31（健壮性批次）：
+  1. `config.ini` 不再入库（`.gitignore` + `git rm --cached`），新增脱敏模板 `config.example.ini`。
+  2. start 前本地预检：任务有效期、每日可跑时段、星期、已完成次数（`qualifiedCount/raTargetNum`），
+     不通过即停止并列出原因；`--force` 可跳过。
+  3. `-a` 失败不再等 `input()`：自动路径统一非零退出码（2），便于 cron/脚本判断。
+  4. 新增 `--log-file`：逐请求审计（端点/业务码/耗时/recordId/已确认里程）写入 `work_dir/logs/`。
+  5. 选表确定性：只挑"能通过校验的任务表 json"，支持 `--task-file` 精确指定；
+     且选表与校验提前到 `start` 之前（避免先建记录再报任务表非法）。
+  6. 学校围栏：`fence` 自动解析并校验——生成轨迹越界直接拒绝，打表回放只提示。
+  7. 时钟跳变：运行中墙钟与单调钟差值超 5s 即停止（避免 ts 与轨迹时间对不上）。
+  8. 截断一致性：末点里程超过任务上限时拒绝上传（说明里程截断没生效）。
+  9. 连接失败只重试一次（仅"连接没建起来"；读超时绝不重放，避免重复记录）。
+ 10. 重复上传提醒：同一张表 24h 内再次上传会提示（状态存 `work_dir/upload_state.json`）。
+ 11. 高德规划失败给出 info/infocode 与排查指引；节流可用 `YUN_AMAP_DELAY` 调整。
+ 12. `--generate-tasklist` 取代原来注释在 `__main__` 里的手动开关。
+
+- 2026-10-31（洛阳理工学院适配与首次实机验证）：
+  1. 学校身份切到洛阳理工学院：`schoolId=197`、`school_host=https://sports.aiyyd.com:8000`；
+     运行数据集中到 `tasks_ly/`；历史（其它学校）任务表已全部移除，
+     deform 回归基准改用洛阳来源 `tests/fixtures/deform/ly_source.json`。
+  2. **实机跑通一次完整打表回放**：`raId=624`（大二男生跑），43 点 / 2.562 km / 5.00 配速 / 174 步频；
+     `isStandard=Y`（里程、步频、配速、踩点四项全 Y），`finish` 返回「成绩合格」。
+     报告见 `work_dir/logs/live_test_report_20261031.md`。
+  3. 新增 `[Run] face_status_missing`（默认 `stop`）：洛阳理工任务体不下发 `runFaceStatus`，
+     需显式置 `allow` 才按无人脸任务处理。
+  4. 新增 `--login`：`-a` 模式不自动登录，配置内 token 失效（401）时用它登录并写回 `[User]`。
+  5. 修正 `tasks_ly` 的 `manageList.index` 顺序（服务端下发顺序为 A,F,C,D,E,B），
+     并把步频偏移默认值改为 0（原 30/-150 会把学校区间收缩成空区间）。
 
 - 2026-10-08：
   1. develop 分支 README 优化。
@@ -52,7 +81,7 @@ develop：云运动（3.6.6）自动跑步脚本，解决 master 两个老大难
 
   <p align="center">
     <img src="./image/random.png" alt="同一来源、三个随机种子（31337 / 31338 / 31339）的形变结果对比，红色虚线为原始轨迹、蓝色实线为生成偏移" width="860"><br>
-    <em>同一来源换随机种子：形状明显不同（deform 几何层对比，原始 3.764 km ／ 合成 3.877 km、686 点）</em>
+    <em>同一来源换随机种子：形状明显不同（deform 几何层对比；示意图为历史演示，当前基准见 §4.7）</em>
   </p>
 
 - 2026/9/23：
@@ -85,7 +114,7 @@ develop：云运动（3.6.6）自动跑步脚本，解决 master 两个老大难
    2. 有人测试发现ios版本也可以直接抓包token和deviceId，uuid使用当前代码，虽然很逆天但是真的过了。(还是不建议使用iOS登录信息跑本脚本)
 
 - 2024/10/12:
-   1. 合并ANormalDD代码，提供屯溪路校区地图和自动抓包(配置教程见proxy.md)支持。
+   1. 合并ANormalDD代码，提供校区地图和自动抓包(配置教程见proxy.md)支持。
    2. 允许传递参数执行`main.py`，提供`./tools/EasyAutoRunServer/run.sh`批量并行运行多个config的任务，配合crontab即可定时批量运行跑步任务(挂一个云服务器上就可以全自动)。
 
 - 2024/9/21：其实我什么都没干，然后它自己又能过了，实锤了是学校服务器问题。
@@ -104,18 +133,21 @@ develop：云运动（3.6.6）自动跑步脚本，解决 master 两个老大难
 python -m venv .venv
 .venv\Scripts\activate            # Windows；Linux/macOS 用 source .venv/bin/activate
 pip install -r requirements.txt   # 参与开发再加 -r requirements-dev.txt
-pytest tests -q                   # 211 项离线测试，可在禁网环境运行
+cp config.example.ini config.ini   # 填学号/密码；config.ini 已被 .gitignore 忽略
+pytest tests -q                   # 249 项离线测试，可在禁网环境运行
 python main.py --dry-run          # 全离线演练：确认本地构造链路正常
 python live_probe.py <跑步区域名> # 实机第一步：查人脸准入（不创建跑步记录）
 ```
 
 ### 3.2 config.ini 配置教学
 
-所有配置在 `config.ini`。**实机期间切勿把填了密码的 config.ini 提交进 git。**
+所有配置在 `config.ini`。**该文件含明文密码/token，已加入 `.gitignore` 不再入库**；
+仓库里保留的是脱敏模板 [config.example.ini](config.example.ini)（`cp config.example.ini config.ini` 后填写）。
 
 - **[Login]（实机必填）**：`username`/`password` 学号密码，留空则运行时询问；
-  登录响应中的 token 自动写回 `[User]`，**不再需要抓包填 token**。
-  登录失败可能触发服务端锁定/验证码：首次失败即停，勿盲目重试。
+  `--login` 登录后 token 会写回 `[User]`，**不再需要抓包填 token**；`-a` 模式不会自动登录，
+  token 过期（业务 401）时加 `--login` 跑一次即可。
+  登录失败可能触发服务端锁定/验证码：首次失败即停，勿盲目重试；每次登录都会使手机端会话失效。
 - **[Yun]（多数保持默认）**：`school_host`/`school_id`/`school_login_url` 学校服务端
   三要素（查询方法见 §3.6）；`app_edition` 保持 3.6.6；`md5key/publickey/privatekey/cipherkey*`
   为仓库内公共协议密钥，勿改。
@@ -123,7 +155,12 @@ python live_probe.py <跑步区域名> # 实机第一步：查人脸准入（不
   自动维护；历史"手填 4 件套"仍兼容，仅 `legacy_uuid=1` 回退旧协议时有意义。
 - **[Run]（打表参数，按需微调）**：`split_count` 每批点数；`min_distance`/
   `allow_overflow_distance` 里程约束；`cadence_*_offset`、`strides` 步频步幅扰动
-  （只影响配速类字段，**不改坐标**）；`exclude_points` 围栏排除点。默认值可用。
+  （只影响配速类字段，**不改坐标**）。默认值可用。
+  围栏不再由本地配置：`getHomeRunInfo` 下发的 `fence` 会自动用于校验（生成轨迹硬失败、
+  打表回放仅提示），旧配置里的 `exclude_points` 已不再读取。
+  **`face_status_missing`**：任务体没有 `runFaceStatus` 字段时怎么办。默认 `stop`（缺失不假设通过）；
+  洛阳理工学院不下发该字段（学校未启用人脸核验，`run/getRlStatus` 已返回 Y），故置 `allow`。
+  仅在学校确无该机制时使用，别用来绕过真正要求人脸的任务。
 
 ### 3.3 运行方式
 
@@ -131,10 +168,14 @@ python live_probe.py <跑步区域名> # 实机第一步：查人脸准入（不
 
 | 命令 | 模式 |
 |---|---|
-| `python main.py -a -t tasks_fch` | 打表自动回放（默认翡翠湖；`-d` 加老式漂移，**已不推荐**，见下） |
-| `python main.py -a --route-config examples/routes/deform_xc.json` | 合成轨迹自动执行 |
+| `python main.py --login -a -t tasks_ly` | 打表自动回放 + **先登录**（token 过期/首次使用时加 `--login`） |
+| `python main.py -a -t tasks_ly` | 打表自动回放（洛阳理工学院；`-a` **不登录**，直接用配置里的 token；`-d` 加老式漂移，**已不推荐**，见下） |
+| `python main.py -a --route-config examples/routes/my_route.json` | 合成轨迹自动执行 |
+| `python main.py -a -t tasks_ly --task-file tasklist_0.json` | 精确指定回放哪张表（不给则在该目录里随机挑一张） |
+| `python main.py -a -t tasks_ly --log-file` | 同上，并把逐请求审计写入 `work_dir/logs/run-<时间>.log`（`--log-file 路径` 可自定） |
 | `python main.py --dry-run [-f …] [--dry-home …] [--route-config …]` | 离线假传输演练，不登录不发请求 |
 | `python main.py --face-photo … --face-detection …` | 带人脸窗口任务的输入（见 §3.5） |
+| 任意命令加 `--force` | 跳过 start 前的本地预检（任务有效期 / 可跑时段 / 星期 / 已完成次数） |
 
 交互模式（首次使用推荐，`python main.py` 直接回车）：
 
@@ -152,9 +193,8 @@ python live_probe.py <跑步区域名> # 实机第一步：查人脸准入（不
 
 ### 3.4 轨迹合成配置（--route-config）
 
-样例：[examples/routes/deform_xc.json](examples/routes/deform_xc.json)（另有 fch / txl /
-带围栏 / 更野参数四份）。**配置内所有相对路径按该配置文件所在目录解析**（所以
-`deform_xc.json` 里的 `../../tasks_xc/tasklist_4.json` 就是仓库里的任务表）。
+样例：[examples/routes/my_route.json](examples/routes/my_route.json)**配置内所有相对路径按该配置文件所在目录解析**（所以
+`my_route.json` 里的 `../../tasks_ly/tasklist_0.json` 就是仓库里的任务表）。
 
 核心键：
 
@@ -185,9 +225,9 @@ python live_probe.py <跑步区域名> # 实机第一步：查人脸准入（不
 先离线预览再生成：
 
 ```bash
-python tools/generate_route.py --config examples/routes/deform_xc.json --output route_preview.geojson
-python main.py --dry-run -f tests/fixtures/test_config.ini --dry-home examples/routes/dry_home.json --route-config examples/routes/deform_xc.json
-python main.py -f config.ini --route-config examples/routes/deform_xc.json
+python tools/generate_route.py --config examples/routes/my_route.json --output route_preview.geojson
+python main.py --dry-run -f tests/fixtures/test_config.ini --dry-home examples/routes/dry_home.json --route-config examples/routes/my_route.json
+python main.py -f config.ini --route-config examples/routes/my_route.json
 ```
 
 不想开命令行时用网页面板看图形：`python web.py` → ②路线预览 → 方案2 轨迹合成 →
@@ -199,7 +239,7 @@ python main.py -f config.ini --route-config examples/routes/deform_xc.json
 "发地图上那条蓝线"（细节与一致性证据见 §4.8，界面截图见 §2 的 2026-10-08 条目）：
 
 **跨校区通用性**：配置结构与字段跨校区通用，只需换来源与（可选的）围栏：
-把 `source_json` 指到目标校区的打表任务表（如 `tasks_txl/tasklist_0.json`）、
+把 `source_json` 指到目标校区的打表任务表（如 `tasks_ly/tasklist_0.json`）、
 `distance_m` 对齐该校任务上限；`pace/cadence/seed/deform_profile` 可原样沿用。
 **不需要先导出 GeoJSON**——tasklist 可以直接当来源（这也是"任选底图 json"的含义）。
 
@@ -237,7 +277,7 @@ python main.py -f config.ini --route-config examples/routes/deform_xc.json
   ```
 
   已抓好的 99 条对照表见 [docs/SCHOOL_DIRECTORY_20260913.md](docs/SCHOOL_DIRECTORY_20260913.md)。
-  合肥工业大学为 `schoolId=100`、`http://210.45.246.53:8080/`；外校不能照搬。
+  本仓库当前适配**洛阳理工学院**：`schoolId=197`、`https://sports.aiyyd.com:8000/`；外校不能照搬。
   多数学校 `https://sports.aiyyd.com:8000/` 但 schoolId 各不相同；带 `/m-api/`
   或私网 IP 的必须保留完整 URL。
 - **被"人脸完整性守卫"拦截 finish**：有窗口未弹或比对未确认，脚本有意不静默收尾；
@@ -305,8 +345,8 @@ python main.py -f config.ini --route-config examples/routes/deform_xc.json
 `yun_route.generate(cfg)` 纯离线（读文件+计算，无网络）：来源 → `deform_points` 形变
 （5.5m 等弧长重采样 → 法向 OU 游走 → 二维相关漂移 → 稀疏衰减跳变 → 长度校准）→
 按时间采样补齐 `runMileage/runTime/runStep/speed`。`deform_geometry(source, seed, profile)`
-是同一算法的纯几何入口（web 预览与外部脚本用）。参数默认值即历史演示包尺度，回归钉在
-`test_deform_matches_demo_scale`（686 点 / 3.877 km）。任务下发的里程上限和
+是同一算法的纯几何入口（web 预览与外部脚本用）。参数默认值沿用历史演示包尺度，回归钉在
+`test_deform_matches_source_scale`（洛阳来源 467 点 / 2.637 km）。任务下发的里程上限和
 `passPointNum` 上传阈值在运行时生效；"2 km 强制提交"按学校任务 `raSingleMileageMax`
 处理，无全局写死。
 
@@ -331,7 +371,7 @@ python main.py -f config.ini --route-config examples/routes/deform_xc.json
 ├── history.py         历史记录查看器
 ├── tools/             Login.py / getUrl_Id.py / drift.py(弃用) / pace_changer.py /
 │                      proxy.py / generate_route.py / EasyAutoRunServer(批量并行)
-├── examples/routes/   deform_*.json 样例 + fence_xc_40.geojson 围栏 + dry_home.json 夹具
+├── examples/routes/   my_route.json 合成样例 + dry_home.json 演练夹具
 ├── tests/             离线测试：yun_http / yun_face / yun_route / main_phase_a /
 │                      wire_alignment / rework_final / live_probe / phase_a_fixes …
 ├── docs/USAGE.md      逐条 CLI 与失败分支表
@@ -347,8 +387,8 @@ python main.py -f config.ini --route-config examples/routes/deform_xc.json
   `yun_http.py`，密钥每请求随机；cipherKey 只加密不解密，"解密别人流量"走不通，
   读自己的记录用 `history.py`（api 细节见 [history.md](history.md)）。
 - 踩点/围栏：服务端对关键点"踩点数"要求改过（2→3），任务表按 `isFence=Y` 覆盖
-  踩点即可；围栏点在 config `[Run] exclude_points` 可调。
-- 主要历史节点：2025-12 随机 SM4 key；2024-12 登录合并；2024-10 屯溪路地图 +
+  踩点即可；围栏改为使用服务端下发的 `fence` 自动校验。
+- 主要历史节点：2025-12 随机 SM4 key；2024-12 登录合并；2024-10 校区地图 +
   proxy.py 批量抓配置 + EasyAutoRunServer；2024-09 起打表模式。项目曾于 3.6.4
   人脸验证上线后停摆（[issue#78](https://github.com/Zirconium233/yunForNewVersion/issues/78)），
   develop 即该问题的完整解决方案。
@@ -375,14 +415,14 @@ python main.py -f config.ini --route-config examples/routes/deform_xc.json
 |---|---|
 | `yun_route.py` | 整体重写为 deform-only：V4 的 `geometry()`/变道/绕行/遥测回放/`base_geojson` 严格解析全部移除；新增 `deform_points`/`deform_geometry`/`extract_points`/`load_points`/`resample`/`ou_distance` 与 `PROFILE_LIMITS`（默认值+取值范围）；`generate()` 只认 `source_json` 等 9 个键；旧 V4 键命中时给出 `V4 合成参数已移除：…` 迁移报错 |
 | `web.py`（新） | 本地网页面板：①信息配置（读写 config.ini、敏感字段掩码、重读按钮）②路线预览（打表回放 / 轨迹合成，任选底图 json + seed，地图按参考轨迹定位）③执行日志（命令由②预览自动生成、只读，dry run 勾选；子进程跑 main.py，stdout 实时抓取）；仅绑 127.0.0.1，`--port` 可配，启动自动开浏览器 |
-| `examples/routes/` | 删除 `v4.json`、`base_v3.geojson` 与 6 份 V4 对比配置；新增 `deform_fch/txl/xc/xc_fence/fch_bold.json`（后两份演示围栏与"更野"参数） |
-| `tests/test_yun_route.py` | 引擎用例换代为 deform（演示基准复现 686 点/3.877km、三种来源等价、profile 越界拒绝、V4 旧键迁移、围栏可选但校验、种子可复现）；main 流程用例保留。全量 211 → **219 项通过** |
+| `examples/routes/` | 删除 `v4.json`、`base_v3.geojson` 与 6 份 V4 对比配置；现只保留洛阳样例 `my_route.json` 与演练夹具 `dry_home.json` |
+| `tests/test_yun_route.py` | 引擎用例换代为 deform（来源基准复现、三种来源等价、profile 越界拒绝、V4 旧键迁移、围栏可选但校验、种子可复现）；main 流程用例保留。现全量 **249 项通过** |
 | `docs/ROUTE_GENERATION.md` | 按 deform 重写（参数表、profile 范围表、长度损失 5% 门限的成因、V4 迁移说明） |
 | 归档 | 外部复现包与其中的参考实现留在 `work_dir/route_offset_repro/`（不随仓库提交） |
 
-**复现基准**（`deform_geometry`，seed=31337，默认 profile）：fch 686 点 / 3.877 km、
-txl 848 / 4.798、xc 728 / 4.117，与演示包逐项零偏差；`distance_m` 与 `sample_seconds=2`
-对齐后生成的任务表点数为 685/847/721（演示包 711/845/749）。
+**复现基准**（`deform_geometry`，seed=31337，默认 profile）：洛阳来源
+`tests/fixtures/deform/ly_source.json`（2.56 km）→ **467 点 / 2.637 km**（平均间距 5.66 m）。
+该基准钉在 `tests/test_yun_route.py::test_deform_matches_source_scale`，改算法或默认 profile 会失败。
 
 **已知取舍**：①形变不判断道路可通行性，围栏是可选一致性校验；②折返尖峰使按时间采样的
 弦长比弧长短 1~3%，长度损失门限因此放宽到 5%；③同源同种子结果完全相同，重复使用同一
@@ -408,12 +448,13 @@ txl 848 / 4.798、xc 728 / 4.117，与演示包逐项零偏差；`distance_m` �
 - **里程区间 + 重抽**：`min_distance_m`/`max_distance_m` 给定时抽到的总里程必须落在区间内，
   否则换种子重抽（seed+1000003×n，抽签流独立），连续 **5 次**不中直接报错，报错里附上
   "来源里程 ±10% 的可达范围与区间交集占比"和 `distance_m` 精确模式提示，不静默放宽。
-- **来源数据实测发现**：fch 表的 `runStep` 折合 **489 spm**（约 3.3 倍失真，xc/txl 为
-  148/150 spm 正常），故加入 110~220 spm 合理性闸门，越界即不采信、退回名义步频，
-  并在 `metadata.source_cadence_spm = null` 如实标注。
+- **来源数据实测发现**：历史上遇到过 `runStep` 单位异常的任务表（折算约 **489 spm**，
+  正常表约 148~150 spm），故加入 110~220 spm 合理性闸门，越界即不采信、退回名义步频，
+  并在 `metadata.source_cadence_spm = null` 如实标注。洛阳任务表本身无 `runStep`，
+  步频同样退回 cfg 名义值（配速仍可从 runTime/runMileage 取到）。
 - **web 展示**：方案2 预览新增「总里程 / 配速 / 步频」参考↔发送三行对比表，
   另附点数、采样间隔、每点里程、几何弦长、第几次抽中、所用区间。
-- 验证：`pytest` **226 项通过**（新增抽签幅度、三向自洽、区间重抽/失败、步频闸门等用例）；
+- 验证：`pytest` **249 项通过**（新增抽签幅度、三向自洽、区间重抽/失败、步频闸门等用例）；
   实测四种子的抽签结果（相对来源）例如 里程 −9.88%/+0.26%/+5.73%/+7.53%、
   配速 +8.16%/+4.88%/+0.70%/−3.42%、步频 −3.95%/−8.04%/+0.12%/+4.62%，全部落在 ±10% 内且每次一行一致。
 
@@ -433,10 +474,10 @@ txl 848 / 4.798、xc 728 / 4.117，与演示包逐项零偏差；`distance_m` �
 **两处"预览的 ≠ 发送的"隐患，本轮在面板侧解决**：
 
 1. **打表方案无法锁定表**：`-a -t <目录>` 内部是 `do_by_points_map(random_choose=True)`
-   → `random.choice(os.listdir(目录))`，把 `tasks_fch` 交给它就是随机发一张表。
+   → `random.choice(os.listdir(目录))`，把 `tasks_ly` 交给它就是随机发一张表。
    面板改为把所选表复制进独占目录 `work_dir/web_send/task_pick/`（逐字节校验内容），
-   日志里的"随机选择：…"必然等于②里选的那张（实测：选 `tasks_txl/tasklist_3.json`
-   → 日志 `随机选择：…\task_pick\tasklist_3.json`）。
+   日志里的"随机选择：…"必然等于②里选的那张（实测：选 `tasks_ly/tasklist_0.json`
+   → 日志 `随机选择：…\task_pick\tasklist_0.json`）。
 2. **默认 `--dry-run` 演练的是随机表**：现在命令完全由②预览决定，
    合成方案引用落盘的 `work_dir/web_send/route_cfg.json`（只含预览用到的键），
    落盘后还会用 CLI 同一入口（`yun_route.generate`）**复算一遍逐点比对**，
@@ -453,10 +494,10 @@ txl 848 / 4.798、xc 728 / 4.117，与演示包逐项零偏差；`distance_m` �
 夹具：`raDislikes=3`、6~7 km，拿它演练合成轨迹必被拒），取消勾选=真发。
 `-a` 是命令的一部分：面板无法代答控制台的"确认：[y/n]"。
 
-**仍存在的阻塞（未改，属 config/main.py 侧）**：`validate_generated_route` 的步频闸门用
-`config.ini` 的 `cadence_min_offset=30` / `cadence_max_offset=-150` 收缩学校区间，
-判据变成 `raCadenceMin+30 ≤ 合成步频 ≤ raCadenceMax-150`；典型任务区间 120~190 被收缩成
-[150, 40]（空区间），**任何合成轨迹都会被拒**——实测
-`--dry-home examples/routes/dry_home.json --route-config examples/routes/deform_xc.json`
-报 `生成步频不在任务允许范围`。dry-run 用面板夹具（放宽区间）不受影响；真跑前需调小
-`cadence_max_offset` 的收缩量。面板已在②的指标区与③的命令说明里给出该提示。
+**原先的步频闸门阻塞已修复**：`validate_generated_route` 会用 `config.ini` 的
+`cadence_min_offset` / `cadence_max_offset` 收缩学校下发区间（判据
+`raCadenceMin+offset ≤ 合成步频 ≤ raCadenceMax+offset`）。历史默认值 `30` / `-150`
+会把典型区间 120~190 收缩成 [150, 40]（空区间），导致任何合成轨迹被拒。
+本仓库已把两个偏移改为 `0`（即直接采用学校下发的 `raCadenceMin`/`raCadenceMax`），
+因此 `--dry-home examples/routes/dry_home.json --route-config examples/routes/my_route.json`
+可以正常演练。若要人为收紧，再按需调小 `cadence_max_offset` 的收缩量。

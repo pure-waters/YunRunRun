@@ -1,0 +1,433 @@
+{
+  "msg": "操作成功",
+  "code": 200,
+  "data": {
+    "recordMileage": 2.56,
+    "recodePace": 5.0,
+    "recodeCadence": 174,
+    "recodeDislikes": 6,
+    "duration": 769,
+    "pointsList": [
+      {
+        "point": "112.417622,34.612324",
+        "runStatus": "1",
+        "speed": "5.00",
+        "isFence": "Y",
+        "isMock": false,
+        "runMileage": 0.0,
+        "runTime": 0
+      },
+      {
+        "point": "112.417453,34.612929",
+        "runStatus": "1",
+        "speed": "5.00",
+        "isFence": "Y",
+        "isMock": false,
+        "runMileage": 69.0,
+        "runTime": 21
+      },
+      {
+        "point": "112.417372,34.613208",
+        "runStatus": "1",
+        "speed": "5.00",
+        "isFence": "Y",
+        "isMock": false,
+        "runMileage": 101.0,
+        "runTime": 30
+      },
+      {
+        "point": "112.418287,34.613408",
+        "runStatus": "1",
+        "speed": "5.00",
+        "isFence": "Y",
+        "isMock": false,
+        "runMileage": 188.0,
+        "runTime": 56
+      },
+      {
+        "point": "112.418368,34.613128",
+        "runStatus": "1",
+        "speed": "5.00",
+        "isFence": "Y",
+        "isMock": false,
+        "runMileage": 220.0,
+        "runTime": 66
+      },
+      {
+        "point": "112.418457,34.612537",
+        "runStatus": "1",
+        "speed": "5.00",
+        "isFence": "Y",
+        "isMock": false,
+        "runMileage": 286.0,
+        "runTime": 86
+      },
+      {
+        "point": "112.417622,34.612324",
+        "runStatus": "1",
+        "speed": "5.00",
+        "isFence": "Y",
+        "isMock": false,
+        "runMileage": 366.0,
+        "runTime": 110
+      },
+      {
+        "point": "112.417453,34.612929",
+        "runStatus": "1",
+        "speed": "5.00",
+        "isFence": "Y",
+        "isMock": false,
+        "runMileage": 435.0,
+        "runTime": 130
+      },
+      {
+        "point": "112.417372,34.613208",
+        "runStatus": "1",
+        "speed": "5.00",
+        "isFence": "Y",
+        "isMock": false,
+        "runMileage": 467.0,
+        "runTime": 140
+      },
+      {
+        "point": "112.418287,34.613408",
+        "runStatus": "1",
+        "speed": "5.00",
+        "isFence": "Y",
+        "isMock": false,
+        "runMileage": 554.0,
+        "runTime": 166
+      },
+      {
+        "point": "112.418368,34.613128",
+        "runStatus": "1",
+        "speed": "5.00",
+        "isFence": "Y",
+        "isMock": false,
+        "runMileage": 586.0,
+        "runTime": 176
+      },
+      {
+        "point": "112.418457,34.612537",
+        "runStatus": "1",
+        "speed": "5.00",
+        "isFence": "Y",
+        "isMock": false,
+        "runMileage": 652.0,
+        "runTime": 196
+      },
+      {
+        "point": "112.417622,34.612324",
+        "runStatus": "1",
+        "speed": "5.00",
+        "isFence": "Y",
+        "isMock": false,
+        "runMileage": 732.0,
+        "runTime": 220
+      },
+      {
+        "point": "112.417453,34.612929",
+        "runStatus": "1",
+        "speed": "5.00",
+        "isFence": "Y",
+        "isMock": false,
+        "runMileage": 801.0,
+        "runTime": 240
+      },
+      {
+        "point": "112.417372,34.613208",
+        "runStatus": "1",
+        "speed": "5.00",
+        "isFence": "Y",
+        "isMock": false,
+        "runMileage": 833.0,
+        "runTime": 250
+      },
+      {
+        "point": "112.418287,34.613408",
+        "runStatus": "1",
+        "speed": "5.00",
+        "isFence": "Y",
+        "isMock": false,
+        "runMileage": 920.0,
+        "runTime": 276
+      },
+      {
+        "point": "112.418368,34.613128",
+        "runStatus": "1",
+        "speed": "5.00",
+        "isFence": "Y",
+        "isMock": false,
+        "runMileage": 952.0,
+        "runTime": 286
+      },
+      {
+        "point": "112.418457,34.612537",
+        "runStatus": "1",
+        "speed": "5.00",
+        "isFence": "Y",
+        "isMock": false,
+        "runMileage": 1018.0,
+        "runTime": 305
+      },
+      {
+        "point": "112.417622,34.612324",
+        "runStatus": "1",
+        "speed": "5.00",
+        "isFence": "Y",
+        "isMock": false,
+        "runMileage": 1098.0,
+        "runTime": 329
+      },
+      {
+        "point": "112.417453,34.612929",
+        "runStatus": "1",
+        "speed": "5.00",
+        "isFence": "Y",
+        "isMock": false,
+        "runMileage": 1167.0,
+        "runTime": 350
+      },
+      {
+        "point": "112.417372,34.613208",
+        "runStatus": "1",
+        "speed": "5.00",
+        "isFence": "Y",
+        "isMock": false,
+        "runMileage": 1199.0,
+        "runTime": 360
+      },
+      {
+        "point": "112.418287,34.613408",
+        "runStatus": "1",
+        "speed": "5.00",
+        "isFence": "Y",
+        "isMock": false,
+        "runMileage": 1286.0,
+        "runTime": 386
+      },
+      {
+        "point": "112.418368,34.613128",
+        "runStatus": "1",
+        "speed": "5.00",
+        "isFence": "Y",
+        "isMock": false,
+        "runMileage": 1318.0,
+        "runTime": 395
+      },
+      {
+        "point": "112.418457,34.612537",
+        "runStatus": "1",
+        "speed": "5.00",
+        "isFence": "Y",
+        "isMock": false,
+        "runMileage": 1384.0,
+        "runTime": 415
+      },
+      {
+        "point": "112.417622,34.612324",
+        "runStatus": "1",
+        "speed": "5.00",
+        "isFence": "Y",
+        "isMock": false,
+        "runMileage": 1464.0,
+        "runTime": 439
+      },
+      {
+        "point": "112.417453,34.612929",
+        "runStatus": "1",
+        "speed": "5.00",
+        "isFence": "Y",
+        "isMock": false,
+        "runMileage": 1533.0,
+        "runTime": 460
+      },
+      {
+        "point": "112.417372,34.613208",
+        "runStatus": "1",
+        "speed": "5.00",
+        "isFence": "Y",
+        "isMock": false,
+        "runMileage": 1565.0,
+        "runTime": 470
+      },
+      {
+        "point": "112.418287,34.613408",
+        "runStatus": "1",
+        "speed": "5.00",
+        "isFence": "Y",
+        "isMock": false,
+        "runMileage": 1652.0,
+        "runTime": 496
+      },
+      {
+        "point": "112.418368,34.613128",
+        "runStatus": "1",
+        "speed": "5.00",
+        "isFence": "Y",
+        "isMock": false,
+        "runMileage": 1684.0,
+        "runTime": 505
+      },
+      {
+        "point": "112.418457,34.612537",
+        "runStatus": "1",
+        "speed": "5.00",
+        "isFence": "Y",
+        "isMock": false,
+        "runMileage": 1750.0,
+        "runTime": 525
+      },
+      {
+        "point": "112.417622,34.612324",
+        "runStatus": "1",
+        "speed": "5.00",
+        "isFence": "Y",
+        "isMock": false,
+        "runMileage": 1830.0,
+        "runTime": 549
+      },
+      {
+        "point": "112.417453,34.612929",
+        "runStatus": "1",
+        "speed": "5.00",
+        "isFence": "Y",
+        "isMock": false,
+        "runMileage": 1899.0,
+        "runTime": 570
+      },
+      {
+        "point": "112.417372,34.613208",
+        "runStatus": "1",
+        "speed": "5.00",
+        "isFence": "Y",
+        "isMock": false,
+        "runMileage": 1931.0,
+        "runTime": 579
+      },
+      {
+        "point": "112.418287,34.613408",
+        "runStatus": "1",
+        "speed": "5.00",
+        "isFence": "Y",
+        "isMock": false,
+        "runMileage": 2018.0,
+        "runTime": 605
+      },
+      {
+        "point": "112.418368,34.613128",
+        "runStatus": "1",
+        "speed": "5.00",
+        "isFence": "Y",
+        "isMock": false,
+        "runMileage": 2050.0,
+        "runTime": 615
+      },
+      {
+        "point": "112.418457,34.612537",
+        "runStatus": "1",
+        "speed": "5.00",
+        "isFence": "Y",
+        "isMock": false,
+        "runMileage": 2116.0,
+        "runTime": 635
+      },
+      {
+        "point": "112.417622,34.612324",
+        "runStatus": "1",
+        "speed": "5.00",
+        "isFence": "Y",
+        "isMock": false,
+        "runMileage": 2196.0,
+        "runTime": 659
+      },
+      {
+        "point": "112.417453,34.612929",
+        "runStatus": "1",
+        "speed": "5.00",
+        "isFence": "Y",
+        "isMock": false,
+        "runMileage": 2265.0,
+        "runTime": 680
+      },
+      {
+        "point": "112.417372,34.613208",
+        "runStatus": "1",
+        "speed": "5.00",
+        "isFence": "Y",
+        "isMock": false,
+        "runMileage": 2297.0,
+        "runTime": 689
+      },
+      {
+        "point": "112.418287,34.613408",
+        "runStatus": "1",
+        "speed": "5.00",
+        "isFence": "Y",
+        "isMock": false,
+        "runMileage": 2384.0,
+        "runTime": 715
+      },
+      {
+        "point": "112.418368,34.613128",
+        "runStatus": "1",
+        "speed": "5.00",
+        "isFence": "Y",
+        "isMock": false,
+        "runMileage": 2416.0,
+        "runTime": 725
+      },
+      {
+        "point": "112.418457,34.612537",
+        "runStatus": "1",
+        "speed": "5.00",
+        "isFence": "Y",
+        "isMock": false,
+        "runMileage": 2482.0,
+        "runTime": 745
+      },
+      {
+        "point": "112.417622,34.612324",
+        "runStatus": "1",
+        "speed": "5.00",
+        "isFence": "Y",
+        "isMock": false,
+        "runMileage": 2562.0,
+        "runTime": 769
+      }
+    ],
+    "schoolId": 197,
+    "manageList": [
+      {
+        "point": "112.417622,34.612324",
+        "marked": "Y",
+        "index": "0"
+      },
+      {
+        "point": "112.418457,34.612537",
+        "marked": "Y",
+        "index": "1"
+      },
+      {
+        "point": "112.417372,34.613208",
+        "marked": "Y",
+        "index": "2"
+      },
+      {
+        "point": "112.418287,34.613408",
+        "marked": "Y",
+        "index": "3"
+      },
+      {
+        "point": "112.418368,34.613128",
+        "marked": "Y",
+        "index": "4"
+      },
+      {
+        "point": "112.417453,34.612929",
+        "marked": "Y",
+        "index": "5"
+      }
+    ]
+  }
+}

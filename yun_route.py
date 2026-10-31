@@ -168,9 +168,14 @@ def load_source(path):
         try:
             miles = [float(r["runMileage"]) for r in rows]
             times = [float(r["runTime"]) for r in rows]
-            steps = [float(r["runStep"]) for r in rows]
         except (KeyError, TypeError, ValueError):
-            miles = times = steps = None
+            miles = times = None
+        # runStep 单独解析：洛阳理工的任务表没有该字段，此时仍应能拿到配速，
+        # 只是拿不到步频（退回 cfg 名义值）。
+        try:
+            steps = [float(r["runStep"]) for r in rows] if times is not None else None
+        except (KeyError, TypeError, ValueError):
+            steps = None
         if miles:
             span_m, span_s = miles[-1]-miles[0], times[-1]-times[0]
             if span_m > 0:
@@ -179,12 +184,14 @@ def load_source(path):
                     pace = span_s/60.0/(span_m/1000.0)
                     if 2.0 <= pace <= 30.0:          # 与 cfg 名义配速同一合理区间
                         metrics["pace_min_km"] = pace
-                    step_span = steps[-1]-steps[0]
-                    cadence = step_span*60.0/span_s if step_span > 0 else 0.0
-                    # 合理性闸门：实测 fch 表的 runStep 约 489 spm（单位/来源异常），
-                    # 跑步步频合理区间取 110~220；越界一律不采信、退回 cfg 名义步频。
-                    if SANE_CADENCE_SPM[0] <= cadence <= SANE_CADENCE_SPM[1]:
-                        metrics["cadence_spm"] = cadence
+                    if steps is not None:
+                        step_span = steps[-1]-steps[0]
+                        cadence = step_span*60.0/span_s if step_span > 0 else 0.0
+                        # 合理性闸门：来源 runStep 单位异常时会算出离谱步频（历史上见过
+                        # 489 spm）；跑步步频合理区间取 110~220，越界一律不采信、
+                        # 退回 cfg 名义步频。
+                        if SANE_CADENCE_SPM[0] <= cadence <= SANE_CADENCE_SPM[1]:
+                            metrics["cadence_spm"] = cadence
     if metrics["length_m"] is None:
         metrics["length_m"] = sum(distance(a, b) for a, b in zip(points, points[1:]))
     return points, metrics

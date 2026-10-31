@@ -108,8 +108,8 @@ def _drill_fixture():
     """
     return _dump_json(DRILL_FIXTURE, {
         "code": 200, "msg": "web.py offline drill fixture（放宽区间，仅演练链路）",
-        "data": {"cralist": [{"id": 900001, "schoolId": "100", "raType": "T1",
-                              "raRunArea": "A", "raDislikes": 0,
+        "data": {"cralist": [{"id": 900001, "schoolId": "197", "raType": "T1",
+                              "raRunArea": "洛阳理工学院", "raDislikes": 0,
                               "raSingleMileageMin": 1.0, "raSingleMileageMax": 20.0,
                               "raCadenceMin": 1, "raCadenceMax": 1000,
                               "runFaceStatus": "N", "points": ""}]}})
@@ -119,7 +119,7 @@ def _plan_base(campus, task):
     """打表回放：把所选任务表放进"独占目录"，让 -a 不可能随机选到别的表。
 
     main.py 的 -t/--task_path 交给 do_by_points_map(random_choose=True)，内部是
-    random.choice(os.listdir(目录))：直接把 tasks_fch 传进去，预览的 tasklist_0
+    random.choice(os.listdir(目录))：直接把 tasks_ly 传进去，预览的 tasklist_0
     和真正发送的可能是任意一张表。故把所选表复制到只含该表的目录。
     """
     src = os.path.join(BASE_DIR, campus, task)
@@ -196,7 +196,7 @@ def _set_plan(plan):
 def build_preview(qs):
     scheme = (qs.get("scheme") or ["base"])[0]
     if scheme == "base":
-        campus = (qs.get("campus") or ["tasks_fch"])[0]
+        campus = (qs.get("campus") or ["tasks_ly"])[0]
         task = (qs.get("task") or [""])[0]
         meta = list_campuses()
         if campus not in meta:

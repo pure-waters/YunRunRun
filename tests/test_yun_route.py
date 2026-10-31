@@ -10,8 +10,10 @@ import yun_http as H
 from test_main_phase_a import CFG, _home, _responder
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE = ROOT/'tasks_fch/tasklist_0.json'        # 任意来源皆可：2.2km 任务表
-DEMO_SOURCE = ROOT/'tasks_fch/tasklist_1.json'   # 历史演示包基准来源
+# 测试专用 fixture（tests/fixtures/deform/），与运行数据 tasks_ly/ 解耦，
+# 也不放进 tests/fixtures/tasks/（那里会被打表用例 random_choose 随机选中）。
+FIXTURES = ROOT/'tests'/'fixtures'/'deform'
+SOURCE = FIXTURES/'ly_source.json'   # 洛阳理工学院任务表副本（43 点 / 2.56 km，无 runStep）
 
 
 def config(tmp_path, **updates):
@@ -60,16 +62,16 @@ def test_deform_task_consistency(tmp_path):
     assert R.generate(config(tmp_path, seed=123))['data']['pointsList'] != pts
 
 
-def test_deform_matches_demo_scale():
-    """历史演示包复现基准（GPT 复现包 verify_demo 的 fch 行）：686 点 / 3.877km。
+def test_deform_matches_source_scale():
+    """形变回归基准（洛阳理工来源 ly_source.json，2.56 km）：467 点 / 2.637 km。
 
-    这条断言把"演示包视觉尺度"钉死在回归里：改动 DEMO_PROFILE 默认值或形变算法
-    都会让它失败，必须是有意为之。
+    这条断言把形变尺度钉死在回归里：改动 DEMO_PROFILE 默认值或形变算法都会让它失败，
+    必须是有意为之（改基准时同步更新本函数的数字与说明）。
     """
-    out = R.deform_geometry(R.load_points(DEMO_SOURCE), seed=31337)
+    out = R.deform_geometry(R.load_points(SOURCE), seed=31337)
     gaps = [R.distance(a, b) for a, b in zip(out, out[1:])]
-    assert len(out) == 686
-    assert sum(gaps)/1000 == pytest.approx(3.877, abs=0.01)
+    assert len(out) == 467
+    assert sum(gaps)/1000 == pytest.approx(2.637, abs=0.01)
     assert sum(gaps)/len(gaps) == pytest.approx(5.66, abs=0.3)   # 5.5m 等弧长重采样
 
 
@@ -125,13 +127,30 @@ def test_distance_window_retry_then_failure(tmp_path):
                             max_distance_m=base*1.1), Path('.'))
 
 
-def test_source_cadence_gate_ignores_implausible_field():
-    """fch 表的 runStep 约 489 spm（来源字段异常）→ 不采信，退回名义步频。"""
-    _, fch = R.load_source(ROOT/'tasks_fch/tasklist_1.json')
-    _, xc = R.load_source(ROOT/'tasks_xc/tasklist_4.json')
-    assert fch['cadence_spm'] is None and fch['pace_min_km'] is not None
-    assert 110 <= xc['cadence_spm'] <= 220
-    task = R.generate_cfg({'source_json': str(ROOT/'tasks_fch/tasklist_1.json'),
+def _task_copy_with_steps(tmp_path, spm, name):
+    """基于洛阳来源造一份带 runStep 的任务表：runStep 折算出的步频 = spm。"""
+    data = json.loads(SOURCE.read_text(encoding='utf-8-sig'))
+    for row in data['data']['pointsList']:
+        row['runStep'] = int(round(float(row['runTime'])/60.0*spm))
+    path = tmp_path/name
+    path.write_text(json.dumps(data, ensure_ascii=False), encoding='utf-8')
+    return path
+
+
+def test_source_cadence_gate_ignores_implausible_field(tmp_path):
+    """来源 runStep 折算成 489 spm（字段单位异常）→ 不采信，退回名义步频；
+    合理步频（150 spm）照常采信。洛阳任务表本身没有 runStep，也要能拿到配速。"""
+    _, plain = R.load_source(SOURCE)
+    assert plain['cadence_spm'] is None and plain['pace_min_km'] is not None
+
+    bad = _task_copy_with_steps(tmp_path, 489, 'cadence_bad.json')
+    ok = _task_copy_with_steps(tmp_path, 150, 'cadence_ok.json')
+    _, bad_m = R.load_source(bad)
+    _, ok_m = R.load_source(ok)
+    assert bad_m['cadence_spm'] is None and bad_m['pace_min_km'] is not None
+    assert 110 <= ok_m['cadence_spm'] <= 220
+
+    task = R.generate_cfg({'source_json': str(bad),
                            'coordinate_system': 'GCJ-02', 'cadence_spm': 160,
                            'distance_m': 1500, 'seed': 5}, Path('.'))
     meta = task['metadata']
@@ -371,8 +390,9 @@ def test_auto_seed_recorded_and_changes_geometry(tmp_path):
 
 def test_deform_profile_override_changes_geometry_only_within_limits(tmp_path):
     base = R.generate(config(tmp_path))['data']['pointsList']
-    bold = R.generate(config(tmp_path, deform_profile={'jump_sigma_m': 20.0,
-                      'length_gain_pct': 0.06}))['data']['pointsList']
+    # lane_sigma_m（法向摆动）在轨迹前段就生效；jump_* 是稀疏事件，短目标里可能一次都不触发。
+    bold = R.generate(config(tmp_path, deform_profile={'lane_sigma_m': 10.0}))[
+        'data']['pointsList']
     assert bold != base
     assert R.generate(config(tmp_path, deform_profile={'spacing_m': 8.0}))['metadata'][
         'geometry_spacing_m'] == 8.0

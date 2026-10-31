@@ -27,6 +27,8 @@ import requests
 import json
 import configparser
 import copy
+import datetime
+import logging
 import hashlib
 from typing import List, Dict
 from gmssl.sm4 import CryptSM4, SM4_ENCRYPT, SM4_DECRYPT
@@ -96,10 +98,10 @@ single_mileage_max_offset = None
 cadence_min_offset = None
 cadence_max_offset = None
 split_count = None
-exclude_points = None
 min_consume = None
 max_consume = None
 strides = None
+face_status_missing_allow = False
 md5key = None
 platform = None
 
@@ -120,13 +122,83 @@ def project_resource(rel: str) -> str:
     return os.path.normpath(os.path.join(PROJECT_ROOT, rel))
 
 
+# ---------------------------------------------------------------- 运行审计日志
+_RUNLOG = logging.getLogger("yun.run")
+_AUDIT_CTX = {"yun": None}
+
+
+def setup_logging(path=None):
+    """配置运行审计日志；path 为空串时用 work_dir/logs/run-<时间>.log。返回实际路径。"""
+    target = path or project_resource(
+        os.path.join("work_dir", "logs", "run-%s.log" % time.strftime("%Y%m%d_%H%M%S")))
+    target = os.path.abspath(target)
+    parent = os.path.dirname(target)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    if not _RUNLOG.handlers:
+        handler = logging.FileHandler(target, encoding="utf-8")
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+        _RUNLOG.addHandler(handler)
+        _RUNLOG.setLevel(logging.INFO)
+        _RUNLOG.propagate = False
+    return target
+
+
+def _audit_hook(router, obj=None, error=None, elapsed=None):
+    """每个 post_json 一行审计：端点、业务码、消息、耗时、recordId、已确认里程。"""
+    if not _RUNLOG.handlers:
+        return
+    yun = _AUDIT_CTX.get("yun")
+    rid = getattr(yun, "crsRunRecordId", None) if yun else None
+    pos = getattr(yun, "_last_confirmed_mileage_m", None) if yun else None
+    cost = (elapsed or 0) * 1000
+    if error is not None:
+        _RUNLOG.error("POST %s 异常=%s 耗时=%.0fms recordId=%s 已确认里程=%s",
+                      router, type(error).__name__, cost, rid, pos)
+        return
+    code = (obj or {}).get("code")
+    msg = str((obj or {}).get("msg", ""))[:150]
+    _RUNLOG.info("POST %s code=%s msg=%s 耗时=%.0fms recordId=%s 已确认里程=%s",
+                 router, code, msg, cost, rid, pos)
+
+
+def attach_audit(client):
+    """把审计钩子挂到客户端（幂等；客户端为 None 时忽略）。"""
+    if client is not None:
+        client.audit = _audit_hook
+
+
+_REQUIRED_CONF = {
+    "Yun": ["school_host", "publickey", "privatekey", "cipherkey", "cipherkeyencrypted",
+            "md5key", "platform", "app_edition", "school_login_url", "school_id"],
+    "User": ["token", "device_id", "device_name"],
+    "Run": ["min_distance", "allow_overflow_distance", "single_mileage_min_offset",
+            "single_mileage_max_offset", "cadence_min_offset", "cadence_max_offset",
+            "split_count", "min_consume", "max_consume", "strides"],
+}
+
+
+def _require_conf(conf):
+    """缺配置项时一次性列出全部缺项，而不是让 configparser 抛单条 NoOptionError。"""
+    missing = []
+    for section, keys in _REQUIRED_CONF.items():
+        if not conf.has_section(section):
+            missing.append(f"[{section}] 整段")
+            continue
+        missing.extend(f"[{section}] {key}" for key in keys if not conf.has_option(section, key))
+    if missing:
+        raise ValueError("config.ini 缺少配置项：" + "、".join(missing) +
+                         "（可从 config.example.ini 复制一份再填）")
+
+
 def set_args(conf_path: str):
     """加载配置：填充旧全局快照 + 构建 DeviceProfile/YunClient。不发起网络。"""
     global my_host, default_key, CipherKeyEncrypted, my_app_edition, my_token, my_device_id
     global my_key, my_device_name, my_sys_edition, my_sys_version, my_utc, my_uuid, my_sign
     global min_distance, allow_overflow_distance, single_mileage_min_offset, single_mileage_max_offset
-    global cadence_min_offset, cadence_max_offset, split_count, exclude_points, min_consume, max_consume
+    global cadence_min_offset, cadence_max_offset, split_count, min_consume, max_consume
     global strides, PUBLIC_KEY, PRIVATE_KEY, md5key, platform
+    global face_status_missing_allow
     global _CONF, _CLIENT, _SM2_BOX, sm2_crypt
 
     resolved = resolve_cli_path(conf_path)
@@ -135,6 +207,7 @@ def set_args(conf_path: str):
 
     conf = configparser.ConfigParser()
     conf.read(resolved, encoding="utf-8")
+    _require_conf(conf)
     _CONF = conf
 
     # 学校、keys和版本信息
@@ -164,10 +237,13 @@ def set_args(conf_path: str):
     cadence_min_offset = int(conf.get("Run", "cadence_min_offset"))
     cadence_max_offset = int(conf.get("Run", "cadence_max_offset"))
     split_count = int(conf.get("Run", "split_count"))
-    exclude_points = json.loads(conf.get("Run", "exclude_points"))
     min_consume = float(conf.get("Run", "min_consume"))
     max_consume = float(conf.get("Run", "max_consume"))
     strides = float(conf.get("Run", "strides"))
+    # 学校若不实现人脸核验，getHomeRunInfo 任务体可能完全没有 runFaceStatus 字段。
+    # 默认 stop（沿用"缺失不假设通过"的保守语义）；显式设为 allow 才按 N 处理。
+    face_status_missing_allow = (conf.get("Run", "face_status_missing", fallback="stop")
+                                 .strip().lower() == "allow")
 
     PUBLIC_KEY = b64decode(conf.get("Yun", "PublicKey"))
     PRIVATE_KEY = b64decode(conf.get("Yun", "PrivateKey"))
@@ -222,8 +298,20 @@ def parse_args():
     parser.add_argument('-f', '--config_path', type=str, default=None,
                         help='配置文件路径（相对路径按调用者工作目录解析；缺省为项目根 config.ini）')
     parser.add_argument('-t', '--task_path', type=str, default=None,
-                        help='任务文件路径（相对路径按调用者工作目录解析；缺省为项目根 tasks_fch）')
+                        help='任务文件路径（相对路径按调用者工作目录解析；缺省为项目根 tasks_ly）')
     parser.add_argument('-a', '--auto_run', action='store_true', help='自动跑步，默认打表')
+    parser.add_argument('--task-file', dest='task_file', default=None,
+                        help='精确指定要回放的任务表文件名/路径（相对 -t 目录解析）；'
+                             '不给则只在该目录里挑能通过校验的任务表 json，-a 时随机选一张')
+    parser.add_argument('--force', action='store_true',
+                        help='跳过 start 前的本地预检（任务有效期/可跑时段/星期/次数）')
+    parser.add_argument('--generate-tasklist', dest='generate_tasklist', action='store_true',
+                        help='只按 map.json + 高德生成 tasks_ly/tasklist_0.json，不跑步（需有效 token）')
+    parser.add_argument('--log-file', dest='log_file', nargs='?', const='',
+                        help='把本次运行的审计日志写入文件（默认 work_dir/logs/run-<时间>.log）')
+    parser.add_argument('--login', action='store_true',
+                        help='运行前用 [Login] 账号密码强制登录，并把 token 写回配置'
+                             '（-a 模式本身不登录，配置里的旧 token 失效时用这个）')
     parser.add_argument('-d', '--drift', action='store_true', help='是否添加漂移')
     parser.add_argument('--route-config', default=None,
                         help='V4 几何模板生成配置（JSON）；替代打表，不能与 -t/-d 混用')
@@ -350,6 +438,20 @@ def noTokenLogin(conf_path: str = None):
     elif LoginChoice == 'n':
         print("由于缺少token退出")
         exit()
+
+
+def persist_session(conf_path, login_result):
+    """把登录结果写回配置 [User]，供后续 -a 直接复用（token 过期时再 --login）。"""
+    token, DeviceId, DeviceName, uuid, sys_edition = login_result
+    config = configparser.ConfigParser()
+    config.read(conf_path, encoding='utf-8')
+    config.set('User', 'token', token)
+    config.set('User', 'uuid', uuid)
+    config.set('User', 'device_id', DeviceId)
+    config.set('User', 'device_name', DeviceName)
+    config.set('User', 'sys_edition', sys_edition)
+    with open(conf_path, 'w', encoding='utf-8') as f:
+        config.write(f)
 
 
 def apply_login_result(token: str, device_id: str, device_name: str,
@@ -569,13 +671,15 @@ def _build_finish_body(record_mileage_km, recode_cadence, recode_pace, recode_di
 class Yun_For_New:
 
     def __init__(self, auto_generate_task=False, client: YunClient = None, home_info=None,
-                 face_runner=None):
+                 face_runner=None, skip_preflight=False):
         """home_info: getHomeRunInfo 响应 dict（离线注入用）。不传才发真实请求。
 
         face_runner: yun_face.FaceRunner。提供时 runFaceStatus=Y 不再直接停止，
         而是由距离窗口触发人脸执行；不提供时保持 A 阶段停止门行为。
+        skip_preflight: 跳过 start 前的本地预检（--force / dry-run 用）。
         """
         self.client = client or default_client()
+        self.skip_preflight = bool(skip_preflight)
         if home_info is not None:
             obj = home_info if isinstance(home_info, dict) else json.loads(home_info)
             if obj.get("code") not in (None, 200):
@@ -588,11 +692,14 @@ class Yun_For_New:
             if not cralist:
                 raise BusinessException(obj.get('code'), 'cralist 为空，没有可用跑步任务', obj)
             data = cralist[0]
+        self._home_outer = (obj.get('data') or {}) if isinstance(obj, dict) else {}
+        self.server_fence = self._parse_fence(data.get('fence'))
+        _AUDIT_CTX["yun"] = self   # 审计行里带 recordId / 已确认里程
 
         # 人脸开关（评审 P2 + §二.4）：启用开关是任务 runFaceStatus
         # （SportRunMapActivity.java:4314），faceTime 只是窗口参数。
         # 'N' 放行；'Y' 且无照片源 → 停止（A 阶段行为保持）；缺失/未知不假设通过。
-        face_status = str(data.get('runFaceStatus', '')).strip().upper()
+        face_status = str(data.get('runFaceStatus') or '').strip().upper()
         self.face_runner = face_runner
         self._face_trigger = None
         if face_status == 'Y':
@@ -600,6 +707,16 @@ class Yun_For_New:
                 raise FaceRequiredError(
                     "该跑步任务要求人脸核验（runFaceStatus=Y）。自动流程已停止；"
                     "可使用官方 App，或提供 --face-photo/--face-video 启用离线人脸管线。")
+        elif face_status == '':
+            # 字段缺失（学校未实现人脸核验）：默认仍按未通过停止，避免协议变化时静默放行。
+            # 仅在 config [Run] face_status_missing = allow（需人工确认学校无此机制）时按 N 处理。
+            if not face_status_missing_allow:
+                raise FaceRequiredError(
+                    f"人脸核验状态缺失（任务体无 runFaceStatus 字段），"
+                    f"按未通过处理，自动流程已停止。若该学校确实不使用人脸核验，"
+                    f"可在 config.ini [Run] 设 face_status_missing = allow。")
+            print("[人脸] 任务体未下发 runFaceStatus；已按 config [Run] face_status_missing=allow 视为无人脸任务")
+            face_status = 'N'
         elif face_status != 'N':
             raise FaceRequiredError(
                 f"人脸核验状态缺失或未知（runFaceStatus={data.get('runFaceStatus')!r}），"
@@ -613,6 +730,15 @@ class Yun_For_New:
         self.raRunArea = data['raRunArea']
         self.raDislikes = data['raDislikes']
         self.raMinDislikes = data['raDislikes']
+        # 任务窗口/频次（start 前本地预检用；不同学校字段可能缺失，缺失即跳过该项）
+        self.raStartTime = data.get('raStartTime')
+        self.raEndTime = data.get('raEndTime')
+        self.dayStartTime = data.get('dayStartTime')
+        self.dayEndTime = data.get('dayEndTime')
+        self.raWeekTime = data.get('raWeekTime')
+        self.raFrequency = data.get('raFrequency')
+        self.raTargetNum = data.get('raTargetNum') or self._home_outer.get('raTargetNum')
+        self.qualifiedCount = self._home_outer.get('qualifiedCount')
         self.raSingleMileageMin = data['raSingleMileageMin'] + single_mileage_min_offset
         self.raSingleMileageMax = data['raSingleMileageMax'] + single_mileage_max_offset
         self.server_min_mileage_km = float(data['raSingleMileageMin'])
@@ -635,6 +761,10 @@ class Yun_For_New:
         self.raCadenceMin = data['raCadenceMin'] + cadence_min_offset
         self.raCadenceMax = data['raCadenceMax'] + cadence_max_offset
         points = data['points'].split('|')
+        print("服务端下发的打卡点：")
+        for p in points:
+            print("  " + p)
+        self.server_points = points
         if auto_generate_task:
             # 如果只要打表，完全可以不执行下面初始化代码
             self.my_select_points = ""
@@ -643,12 +773,13 @@ class Yun_For_New:
                 tmp = json.loads(my_s)
                 self.my_select_points = tmp["mypoints"]
                 self.my_point = tmp["origin_point"]
-            for my_select_point in self.my_select_points:  # 手动取点
+            # 保存服务端下发的打卡点，用于后续过滤 manageList
+            self.server_points = points
+            for my_select_point in self.my_select_points:
                 if my_select_point in points:
                     print(my_select_point + " 存在")
                 else:
-                    print(my_select_point + " 不存在")
-                    raise ValueError
+                    print(my_select_point + " 不存在（作为中间点使用）")
             print('开始标记打卡点...')
             self.now_dist = 0
             i = 0
@@ -663,6 +794,30 @@ class Yun_For_New:
                 self.myLikes = 0
                 self.generate_task(self.my_select_points)
             self.now_time = int(random.uniform(min_consume, max_consume) * 60 * (self.now_dist / 1000))
+            # ===== 保存生成的 tasklist =====
+            import json as _json, os as _os
+            task_data = {
+                "msg": "操作成功",
+                "code": 200,
+                "data": {
+                    "recordMileage": round(self.now_dist / 1000, 2),
+                    "recodePace": round(self.now_time / 60 / (self.now_dist / 1000), 2),
+                    "recodeCadence": random.randint(self.raCadenceMin, self.raCadenceMax),
+                    "recodeDislikes": self.myLikes,
+                    "duration": self.now_time,
+                    "pointsList": [],
+                    "schoolId": self.schoolId,
+                    "manageList": self.manageList
+                }
+            }
+            for task in self.task_list:
+                for split in task['points']:
+                    task_data["data"]["pointsList"].extend(split)
+            _os.makedirs("tasks_ly", exist_ok=True)
+            with open("tasks_ly/tasklist_0.json", "w", encoding="utf-8") as f:
+                _json.dump(task_data, f, ensure_ascii=False, indent=4)
+            print("已保存到 tasks_ly/tasklist_0.json")
+            # ===== 保存结束 =====
             print('打卡点标记完成！本次将打卡' + str(self.myLikes) + '个点，处理' + str(len(self.task_list)) + '个点，总计'
                   + format(self.now_dist / 1000, '.2f')
                   + '公里，将耗时' + str(self.now_time // 60) + '分' + str(self.now_time % 60) + '秒')
@@ -673,22 +828,23 @@ class Yun_For_New:
 
     def generate_task(self, points):
         for point_index, point in enumerate(points):
-            if self.now_dist / 1000 < min_distance or self.myLikes < self.raMinDislikes:  # 里程不足或者点不够
-                self.manageList.append({
-                    'point': point,
-                    'marked': 'Y',
-                    'index': str(point_index)
-                })
+            if self.now_dist / 1000 < min_distance or self.myLikes < self.raMinDislikes:
+                # 只有真正的打卡点才加入 manageList
+                if point in self.server_points:
+                    self.manageList.append({
+                        'point': point,
+                        'marked': 'Y',
+                        'index': str(point_index)
+                    })
+                    self.myLikes += 1
                 self.add_task(point)
-                self.myLikes += 1
-                # 必须的任务
             else:
-                self.manageList.append({
-                    'point': point,
-                    'marked': 'N',
-                    'index': ''
-                })
-                # 多余的点
+                if point in self.server_points:
+                    self.manageList.append({
+                        'point': point,
+                        'marked': 'N',
+                        'index': ''
+                    })
         # 如果跑完了表都不够
         if self.now_dist / 1000 < min_distance:
             print("跑完了一圈关键点，长度仍然不够，会自动回跑绕圈圈")
@@ -711,13 +867,32 @@ class Yun_For_New:
             'origin': origin,  # 起始点
             'destination': point  # 传入的点
         }
-        resp = requests.get("https://restapi.amap.com/v4/direction/bicycling", params=data,
-                            timeout=yun_http.DEFAULT_TIMEOUT)  # A.4：外部调用同样加超时
-        # 规划的点
-        j = json.loads(resp.text)
+        delay = float(os.environ.get('YUN_AMAP_DELAY', '2'))  # 节流可配；0 调试用
+        if delay > 0:
+            time.sleep(delay)
+        try:
+            resp = requests.get("https://restapi.amap.com/v4/direction/bicycling", params=data,
+                                timeout=yun_http.DEFAULT_TIMEOUT)  # A.4：外部调用同样加超时
+        except requests.RequestException as exc:
+            raise RuntimeError(f'高德骑行规划请求失败（{origin}→{point}）：{exc}') from exc
+        if resp.status_code != 200:
+            raise RuntimeError(f'高德骑行规划 HTTP {resp.status_code}（{origin}→{point}）')
+        try:
+            j = json.loads(resp.text)
+        except ValueError as exc:
+            raise RuntimeError(f'高德返回不是 JSON（{origin}→{point}）') from exc
+        # 高德业务码：status=1 成功；info/infocode 说明失败原因（常见 key 无效/额度用尽）
+        if str(j.get('status', '')) != '1':
+            raise RuntimeError(
+                f"高德骑行规划失败 info={j.get('info')!r} infocode={j.get('infocode')!r}"
+                f"（检查 config [User] map_key 与当日额度）")
+        paths = (j.get('data') or {}).get('paths')
+        if not isinstance(paths, list) or not paths:
+            raise RuntimeError(f'高德返回没有可用路径（{origin}→{point}）：{str(j)[:200]}')
+        print(f"高德规划 {origin}→{point}：{len(paths)} 条路径")
         split_points = []
         split_point = []
-        for path in j['data']['paths']:
+        for path in paths:
             self.now_dist += path['distance']  # 路径长度
             path['steps'][-1]['polyline'] += ';' + point  # 补上了一个起始点
             for step in path['steps']:
@@ -789,7 +964,63 @@ class Yun_For_New:
             'points': split_points
         })
 
+    _WEEKDAY_NAMES = ('星期一', '星期二', '星期三', '星期四', '星期五', '星期六', '星期日')
+
+    def preflight_check(self, now=None):
+        """start 前的本地预检：任务有效期、每日可跑时段、星期、已完成次数。
+
+        服务端下发字段缺失时跳过对应检查（不同学校字段不全）；不猜测、不放宽。
+        不通过时抛 ValueError 并列出全部原因；--force / dry-run 用 skip_preflight 跳过。
+        """
+        if getattr(self, 'skip_preflight', False):
+            return
+        now = now or datetime.datetime.now()
+        problems = []
+
+        def _as_date(value):
+            try:
+                return datetime.date.fromisoformat(str(value)[:10]) if value else None
+            except (TypeError, ValueError):
+                return None
+
+        start_day, end_day = _as_date(self.raStartTime), _as_date(self.raEndTime)
+        today = now.date()
+        if start_day and today < start_day:
+            problems.append(f"任务尚未开始（{start_day} 起）")
+        if end_day and today > end_day:
+            problems.append(f"任务已结束（{end_day} 止）")
+
+        def _minutes(value):
+            try:
+                hour, minute = str(value).split(':')[:2]
+                return int(hour)*60 + int(minute)
+            except (TypeError, ValueError):
+                return None
+
+        begin, finish = _minutes(self.dayStartTime), _minutes(self.dayEndTime)
+        current = now.hour*60 + now.minute
+        if begin is not None and finish is not None:
+            inside = (begin <= current <= finish) if begin <= finish else (current >= begin or current <= finish)
+            if not inside:
+                problems.append(f"当前不在可跑时段（{self.dayStartTime}~{self.dayEndTime}）")
+
+        days = [d.strip() for d in str(self.raWeekTime or '').replace('，', ',').split(',') if d.strip()]
+        if days and self._WEEKDAY_NAMES[now.weekday()] not in days:
+            problems.append(f"今天{self._WEEKDAY_NAMES[now.weekday()]}不在任务开放日（{self.raWeekTime}）")
+
+        try:
+            done, target = int(self.qualifiedCount), int(self.raTargetNum)
+        except (TypeError, ValueError):
+            done = target = None
+        if done is not None and target is not None and target > 0 and done >= target:
+            problems.append(f"本期已完成 {done}/{target} 次，任务额度已满")
+
+        if problems:
+            raise ValueError("[预检] " + "；".join(problems) + "。确认要强行开跑可加 --force。")
+
     def start(self):
+        self.preflight_check()
+        self._mark_clock()   # 运行中检查墙钟/单调钟是否跳变
         # APK startRun 走 HashMap<String,String>（:4821-4824）：三个字段都是字符串。
         data = {
             'raRunArea': str(self.raRunArea),
@@ -950,7 +1181,7 @@ class Yun_For_New:
     def split(self, points):
         data = _build_split_body(self.crsRunRecordId, self.userName, self.schoolId,
                                  points, self.strides)
-        # 特殊接口：gzip 后再 SM4（合工大抓包验证过；其他学校未知）
+        # 特殊接口：gzip 后再 SM4（历史抓包验证过；其他学校/接口未知）
         # 返修 R3：HTTP 200 里的业务 code 同样解析——服务器拒绝立即停止，
         # 不再"打印后继续"。
         obj = self._post_checked("/run/splitPointCheating",
@@ -970,6 +1201,53 @@ class Yun_For_New:
                 self.client.sleep(sleep_time)
             print('第' + str(task_index + 1) + '个点处理完毕！')
 
+    @staticmethod
+    def _parse_fence(raw):
+        """解析任务下发的 fence（"lon,lat|lon,lat|..."）为闭合前的多边形环。"""
+        if not raw:
+            return None
+        ring = []
+        for item in str(raw).split('|'):
+            lon, _, lat = item.partition(',')
+            try:
+                ring.append((float(lon), float(lat)))
+            except ValueError:
+                return None
+        return ring if len(ring) >= 3 else None
+
+    def _check_fence(self, points, strict):
+        """按学校围栏校验点列：strict=True 越界即报错，否则只提示一次。"""
+        if not self.server_fence:
+            return
+        outside = [p for p in points if not yun_route.inside(p, self.server_fence)]
+        if not outside:
+            return
+        preview = ','.join(f'{lon:.6f},{lat:.6f}' for lon, lat in outside[:3])
+        message = (f'有 {len(outside)}/{len(points)} 个点越出学校围栏'
+                   f'（示例：{preview}）')
+        if strict:
+            raise ValueError('[围栏] ' + message)
+        if not getattr(self, '_fence_warned', False):
+            self._fence_warned = True
+            print(f'[围栏提示] {message}；服务端可能判定无效，请核对任务表')
+
+    # 运行中时钟跳变容忍度（秒）。墙钟与单调钟的差值突变说明系统时间被调整/休眠过，
+    # 继续上传会出现 ts 与间隔对不上的记录。
+    CLOCK_DRIFT_LIMIT_S = 5.0
+
+    def _mark_clock(self):
+        self._clock_base = (self.client.now(), self.client.mono())
+
+    def check_clock_drift(self):
+        base = getattr(self, '_clock_base', None)
+        if not base:
+            return
+        drift = (self.client.now() - base[0]) - (self.client.mono() - base[1])
+        if abs(drift) > self.CLOCK_DRIFT_LIMIT_S:
+            raise ValueError(
+                f'[时钟] 运行期间系统时钟跳变 {drift:+.1f}s（阈值 {self.CLOCK_DRIFT_LIMIT_S}s），'
+                '已停止上传：ts 与轨迹时间会对不上。请校准系统时间后重跑。')
+
     def validate_generated_route(self, task):
         """在 start 前校验任务约束；几何生成不能替代学校的踩点要求。"""
         data = task['data']
@@ -986,6 +1264,9 @@ class Yun_For_New:
             raise ValueError("生成步频不在任务允许范围")
         if self.upload_batch_size < 2:
             raise ValueError("生成模式上传批次至少为 2 点")
+        self._check_fence(
+            [tuple(map(float, p['point'].split(','))) for p in data['pointsList']],
+            strict=True)
 
     def _cap_point(self, point, previous):
         """达到学校上限时在当前线段截点，避免 finish 里程和末点不符。"""
@@ -1013,8 +1294,13 @@ class Yun_For_New:
             raise ValueError('路径没有可上传点')
         data = self.task_map['data']
         data['pointsList'] = points
+        last_m = float(points[-1]['runMileage'])
+        if last_m > self.distance_cap_m + 1e-6:
+            raise ValueError(
+                f'末点里程 {last_m:.1f}m 超过任务上限 {self.distance_cap_m:.0f}m：'
+                '里程截断未生效，拒绝上传以免 finish 汇总与逐点不符')
         data['duration'] = max(int(points[-1]['runTime']), int(planned_duration))
-        data['recordMileage'] = float(points[-1]['runMileage']) / 1000
+        data['recordMileage'] = last_m / 1000
         if data['recordMileage'] > 0:
             data['recodePace'] = data['duration'] / 60 / data['recordMileage']
         if points[-1]['runStep'] and data['duration'] > 0:
@@ -1023,6 +1309,13 @@ class Yun_For_New:
     def do_generated_route(self, task):
         """按逐点时间调度；复用既有上传、人脸停止门与结束链。"""
         self.task_map = copy.deepcopy(task)
+        # 合成任务没有 manageList 时，从服务端打卡点生成
+        if not self.task_map['data'].get('manageList'):
+            self.task_map['data']['manageList'] = [
+                {"point": p, "marked": "Y", "index": str(i)}
+                for i, p in enumerate(self.server_points)
+            ]
+            print(f"[manageList] 注入 {len(self.task_map['data']['manageList'])} 个打卡点")
         self._pending_tail_points = []
         points = []
         epoch = self.client.now()
@@ -1067,26 +1360,140 @@ class Yun_For_New:
         if points:
             print(f"[尾批] 暂存尾部 {len(points)} 点；由状态检查 → 尾批 → finish 链处理")
 
-    def do_by_points_map(self, path='./tasks', random_choose=False, isDrift=False):
-        files = os.listdir(path)
-        files.sort()
-        if not random_choose:
-            print("检测到可用表格：[输入-1随机选择，输入序号选择对应task]")
-            print(files)
-            choice = int(input("选择："))
-            if choice == -1:
-                file = os.path.join(path, random.choice(files))
-                print("随机选择：" + file)
-            else:
-                file = os.path.join(path, files[choice])
+    @classmethod
+    def _load_tasklist(cls, path):
+        """读取并校验任务表；不合格时抛 ValueError（带文件路径与具体缺项）。"""
+        try:
+            with open(path, 'r', encoding='utf-8-sig') as f:
+                obj = json.load(f)
+        except (OSError, ValueError) as exc:
+            raise ValueError(f"任务表无法读取/不是合法 JSON: {path}（{exc}）") from exc
+        cls._validate_tasklist(obj, path)
+        return obj
+
+    @classmethod
+    def pick_task(cls, path, random_choose=False, task_file=None, input_fn=input):
+        """在 start 之前选好并校验任务表，返回 (路径, 任务 dict)。
+
+        显式 task_file 优先；否则只在该目录里挑"能通过校验的任务表 json"，
+        避免 routes/配置/围栏等 json 混进来被随机选中。
+        """
+        if task_file:
+            candidate = task_file if os.path.isabs(task_file) else os.path.join(path, task_file)
+            if not os.path.isfile(candidate):
+                raise FileNotFoundError(f"指定的任务表不存在: {candidate}")
+            return candidate, cls._load_tasklist(candidate)
+        try:
+            names = sorted(os.listdir(path))
+        except FileNotFoundError as exc:
+            raise FileNotFoundError(f"任务目录不存在: {path}") from exc
+        candidates = []
+        for name in names:
+            if not name.endswith('.json'):
+                continue
+            full = os.path.join(path, name)
+            try:
+                cls._load_tasklist(full)
+            except ValueError:
+                continue
+            candidates.append(name)
+        if not candidates:
+            raise FileNotFoundError(
+                f"任务目录里没有可回放的任务表（*.json 需含 data.pointsList）: {path}")
+        if random_choose:
+            pick = random.choice(candidates)
         else:
-            file = os.path.join(path, random.choice(files))
-            print("随机选择：" + file)
-        with open(file, 'r', encoding='utf-8') as f:
-            self.task_map = json.loads(f.read())
+            print("检测到可用表格：[输入-1随机选择，输入序号选择对应task]")
+            print(candidates)
+            try:
+                choice = int(input_fn("选择："))
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"请输入数字序号（可用：{candidates}）") from exc
+            if choice == -1:
+                pick = random.choice(candidates)
+            elif 0 <= choice < len(candidates):
+                pick = candidates[choice]
+            else:
+                raise ValueError(f"序号越界：{choice}，可用范围 0~{len(candidates)-1}")
+        full = os.path.join(path, pick)
+        return full, cls._load_tasklist(full)
+
+    @staticmethod
+    def _validate_tasklist(task_map, source):
+        """上传前校验任务表必需字段，缺字段时给出明确原因而不是半途 KeyError。"""
+        if not isinstance(task_map, dict) or not isinstance(task_map.get('data'), dict):
+            raise ValueError(f"任务表结构不对（缺 data 对象）: {source}")
+        data = task_map['data']
+        points = data.get('pointsList')
+        if not isinstance(points, list) or len(points) < 2:
+            raise ValueError(f"任务表 pointsList 缺失或不足 2 点: {source}")
+        for idx, p in enumerate(points[:2] + points[-1:]):
+            for key in ('point', 'runMileage', 'runTime'):
+                if key not in p:
+                    raise ValueError(f"任务表第 {idx} 个点缺少字段 {key!r}: {source}")
+            lon, _, lat = str(p['point']).partition(',')
+            try:
+                float(lon), float(lat)
+            except ValueError as exc:
+                raise ValueError(f"任务表第 {idx} 个点的坐标格式不对: {p['point']!r}") from exc
+        for key in ('recordMileage', 'duration'):
+            if key not in data:
+                raise ValueError(f"任务表缺少汇总字段 {key!r}: {source}")
+            try:
+                if float(data[key]) <= 0:
+                    raise ValueError
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"任务表汇总字段 {key!r} 不是正数: {data[key]!r}") from exc
+
+    UPLOAD_STATE = os.path.join('work_dir', 'upload_state.json')
+
+    @staticmethod
+    def _task_fingerprint(task_map):
+        raw = json.dumps(task_map, sort_keys=True, ensure_ascii=False).encode('utf-8')
+        return hashlib.sha256(raw).hexdigest()
+
+    def _warn_repeat_upload(self, fingerprint):
+        """同一张表/同一条轨迹在 24h 内重复上传时提醒（服务端有近重复检测）。
+
+        只提示不阻断：是否继续由使用者决定；状态写入 work_dir/upload_state.json。
+        dry-run 不改动任何本地状态。
+        """
+        if getattr(self, 'skip_upload_state', False):
+            return
+        path = project_resource(self.UPLOAD_STATE)
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            state = {}
+            if os.path.exists(path):
+                with open(path, 'r', encoding='utf-8') as f:
+                    state = json.load(f) or {}
+            now = int(time.time())
+            history = [t for t in state.get(fingerprint, []) if now - int(t) < 30*86400]
+            recent = [t for t in history if now - int(t) < 86400]
+            if recent:
+                print(f"[重复提醒] 这张任务表 24h 内已上传过 {len(recent)} 次；"
+                      "服务端有近重复检测，建议换表或改用合成轨迹。")
+            history.append(now)
+            state[fingerprint] = history
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump(state, f)
+        except (OSError, ValueError, TypeError):
+            pass  # 状态文件只是提醒用途，失败不影响跑步
+
+    def do_by_points_map(self, path='./tasks', random_choose=False, isDrift=False,
+                         task_file=None, task_map=None):
+        # task_map 已由调用方在 start 之前用 pick_task() 选好并校验；没给才现选。
+        if task_map is None:
+            file, task_map = self.pick_task(path, random_choose=random_choose,
+                                            task_file=task_file)
+            print("选择任务表：" + file)
+        self.task_map = task_map
+        self._warn_repeat_upload(self._task_fingerprint(self.task_map))
         if isDrift:
             self.task_map = add_drift(self.task_map)
         source_points = self.task_map['data']['pointsList']
+        self._check_fence([tuple(map(float, p['point'].split(','))) for p in source_points],
+                          strict=False)
         # 旧 task 可以无 runStep；上传前统一派生绝对累计步数，避免批内派生
         # 与 finish 汇总使用不同来源。混合“有步数/缺步数”则拒绝猜测。
         raw_steps = [p.get('runStep', 0) for p in source_points]
@@ -1181,6 +1588,7 @@ class Yun_For_New:
                   "将由 finish 链按『状态检查 → 尾批 → finish』顺序处理")
 
     def split_by_points_map(self, points):
+        self.check_clock_drift()
         self._face_guard("splitPoint 批次上传")   # R2：任何入口直接调用同样被拦截
         data = _build_split_body(self.crsRunRecordId, self.userName, self.schoolId,
                                  points, self.strides)
@@ -1193,6 +1601,7 @@ class Yun_For_New:
 
     def finish_by_points_map(self):
         # 返修 R1/R2：finish 前必须过窗口完整性检查与会话阻断检查
+        self.check_clock_drift()
         self._face_guard("finish")
         self._face_check_complete_before_finish()
         data = _build_finish_body(
@@ -1486,18 +1895,24 @@ def run_dry(cfg_path: str, task_path: str, args):
     )
     client = YunClient(profile, base_url=my_host, transport=fake,
                        rng=random.Random(20260911), sleep=lambda s: None)
+    attach_audit(client)  # dry-run 也记审计（假传输，但端点/耗时/顺序真实）
     face_runner = build_face_runner(args, sleep=lambda s: None)
     try:
         yun = Yun_For_New(auto_generate_task=False, client=client, home_info=None,
-                          face_runner=face_runner)
+                          face_runner=face_runner, skip_preflight=True)
+        yun.skip_upload_state = True   # dry-run 不写本地状态
         generated_task = getattr(args, 'generated_task', None)
         if generated_task is not None:
             yun.validate_generated_route(generated_task)
+        else:
+            # 建档（start）之前就选好并校验任务表，避免"先建记录再报任务表非法"
+            _, task_map = Yun_For_New.pick_task(
+                task_path, random_choose=True, task_file=getattr(args, 'task_file', None))
         yun.start()
         if generated_task is not None:
             yun.do_generated_route(generated_task)
         else:
-            yun.do_by_points_map(path=task_path, random_choose=True, isDrift=args.drift)
+            yun.do_by_points_map(path=task_path, task_map=task_map)
         yun.finish_by_points_map()
     except FaceRequiredError as e:
         print("[dry-run 停止门] " + str(e))
@@ -1562,22 +1977,44 @@ def choose_synthesized_task(input_fn=input, print_fn=print):
 
 def main(run=True):
     args = parse_args()
+    if getattr(args, 'generate_tasklist', False):
+        generate_only(getattr(args, 'config_path', None))
+        return
     route_path = getattr(args, 'route_config', None)
     if route_path and (args.task_path or args.drift):
         raise ValueError("--route-config 不能与 -t/--task_path 或 -d/--drift 混用")
     # 几何预检在账号配置、登录、getHomeRunInfo 和 start 之前完成。
     args.generated_task = yun_route.generate(resolve_cli_path(route_path)) if route_path else None
     cfg_path = resolve_cli_path(args.config_path) if args.config_path else project_resource("config.ini")
-    task_path = resolve_cli_path(args.task_path) if args.task_path else project_resource("tasks_fch")
+    task_path = resolve_cli_path(args.task_path) if args.task_path else project_resource("tasks_ly")
 
     # 设置全局变量（快照）并构建统一客户端
     user_info = set_args(cfg_path)
     global my_token, my_device_id, my_device_name, my_uuid, my_sys_edition
 
+    if getattr(args, 'log_file', None) is not None:
+        target = setup_logging(args.log_file)
+        attach_audit(default_client())
+        print(f"[日志] 审计日志：{target}")
+        _RUNLOG.info("运行开始 config=%s school=%s task_path=%s route=%s auto=%s",
+                     cfg_path, my_host, task_path,
+                     getattr(args, 'route_config', None) or '-',
+                     getattr(args, 'auto_run', False))
+
     if args.dry_run:
         # 评审 §3-A.5：dry-run 不登录、不探测、不 sleep、不写配置
         run_dry(cfg_path, task_path, args)
         return
+
+    if getattr(args, 'login', False):
+        print("[登录] 按 --login 强制登录（登录会使手机端会话失效，尽量少用）...")
+        result = Login.main(cfg_path)
+        if result is None:
+            print("[登录] 失败/取消：停止，勿盲目重试（可能触发锁定/验证码）")
+            return
+        apply_login_result(*result, conf_path=cfg_path)
+        persist_session(cfg_path, result)
+        print("[登录] 成功，token 已写回配置 [User]")
 
     if not args.auto_run:
         if len(my_token) == 0:
@@ -1622,7 +2059,8 @@ def main(run=True):
                     legacy_drift_choice = True
             if args.generated_task is not None:
                 Yun = Yun_For_New(auto_generate_task=False,
-                                  face_runner=build_face_runner(args))
+                                  face_runner=build_face_runner(args),
+                                  skip_preflight=getattr(args, 'force', False))
                 Yun.validate_generated_route(args.generated_task)
                 Yun.start()
                 Yun.do_generated_route(args.generated_task)
@@ -1635,13 +2073,9 @@ def main(run=True):
             if print_table == 'y':
                 if not args.auto_run:
                     print("warning:\n打表模式下\n跑步的步频、配速等信息受tasklist.json控制，不会读取map.json，config.ini的跑步信息失效")
-                    choice = input("请选择校区（1.翡翠湖校区,2.屯溪路校区,3.宣城校区,4.自定义(文件夹tasks_else)）")
+                    choice = input("请选择校区（1.洛阳理工学院,4.自定义(文件夹tasks_else)）")
                     if (choice == '1'):
-                        path = "./tasks_fch"
-                    elif (choice == '2'):
-                        path = "./tasks_txl"
-                    elif (choice == '3'):
-                        path = "./tasks_xc"
+                        path = "./tasks_ly"
                     else:
                         path = "./tasks_else"
                     if legacy_drift_choice:
@@ -1651,17 +2085,24 @@ def main(run=True):
                     else:
                         isDrift = input("是否添加老式漂移（弃用：仅 0.1mm 刚性平移，推荐 n）：[y/n，默认 n]").strip()
                         driftChoice = (isDrift == 'y')
+                    _, picked_map = Yun_For_New.pick_task(
+                        path, random_choose=False, task_file=getattr(args, 'task_file', None))
                     Yun = Yun_For_New(auto_generate_task=False,
-                                      face_runner=build_face_runner(args))
+                                      face_runner=build_face_runner(args),
+                                      skip_preflight=getattr(args, 'force', False))
                     Yun.start()
-                    Yun.do_by_points_map(path=path, isDrift=driftChoice)
+                    Yun.do_by_points_map(path=path, isDrift=driftChoice, task_map=picked_map)
                     Yun.finish_by_points_map()
                 else:
                     path = task_path
+                    picked_file, picked_map = Yun_For_New.pick_task(
+                        path, random_choose=True, task_file=getattr(args, 'task_file', None))
+                    print("选择任务表：" + picked_file)
                     Yun = Yun_For_New(auto_generate_task=False,
-                                      face_runner=build_face_runner(args))
+                                      face_runner=build_face_runner(args),
+                                      skip_preflight=getattr(args, 'force', False))
                     Yun.start()
-                    Yun.do_by_points_map(path=path, random_choose=True, isDrift=args.drift)
+                    Yun.do_by_points_map(path=path, isDrift=args.drift, task_map=picked_map)
                     Yun.finish_by_points_map()
             else:
                 quick_model = input("快速模式(瞬间跑完)：[y/n]")
@@ -1697,6 +2138,16 @@ def main(run=True):
         print(f"[业务拒绝] {e}")
         print(f"[业务拒绝] 后续上传/finish 均未发送。recordId={rid!r}，{pos_s}；"
               "请先查询服务端记录状态再决定下一步，不要盲目重发。")
+        code = getattr(e, "code", None)
+        msg = str(e)
+        if code == 401 or "401" in msg or "认证失败" in msg or "token" in msg.lower():
+            print("[业务拒绝] 提示：token 已失效（-a 模式不会自动登录）。"
+                  "用 `python main.py --login ...` 重新登录一次即可（登录会使手机端会话失效，尽量少用）。")
+            if not rid:
+                print("[业务拒绝] 本次在 start 之前就失败，服务端未创建跑步记录。")
+            else:
+                print("[业务拒绝] 记录已创建但未完成：请到云运动 APP 里删除该条记录，"
+                      "避免留下半截数据。")
     except (HttpStatusException, DecodeException) as e:
         # 评审 §3-A.1：状态未知时保留现场、报告，而不是继续 finish 或自动重发
         rid = getattr(Yun, "crsRunRecordId", None)
@@ -1707,13 +2158,42 @@ def main(run=True):
         print(f"[失败] 请求结果可能未定（状态未知），不要盲目重发；recordId={rid!r}，"
               f"{pos_s}；请先查询服务端记录再决定。")
     except Exception as e:
-        if args.generated_task is not None:
-            # 自动生成任务失败必须以非零退出，不等待不可见的 input()。
+        # 自动化/合成任务失败必须抛出（由 __main__ 转成非零退出码）；
+        # 只有交互模式才等回车，避免 cron/后台运行挂在 input() 上。
+        if args.generated_task is not None or getattr(args, 'auto_run', False):
             raise
         print("跑步失败了，错误信息：")
         print(e)
         input()
 
+def generate_only(conf_path=None):
+    """只生成 tasklist：需要有效 token，token 失效则先登录。"""
+    global my_token
+    cfg_path = resolve_cli_path(conf_path) if conf_path else project_resource("config.ini")
+    set_args(cfg_path)
 
+    if not my_token:
+        result = noTokenLogin(cfg_path)
+        if result is None:
+            print("登录失败，无法生成 tasklist")
+            return
+        apply_login_result(*result, conf_path=cfg_path)
+        print("登录成功，token 已更新")
+
+    try:
+        Yun_For_New(auto_generate_task=True)
+        print("生成完成，tasklist 已保存到 tasks_ly/tasklist_0.json")
+    except BusinessException as e:
+        print(f"生成失败：{e}")
+        print("如果你的 token 刚失效，请执行一次正式运行完成登录后再试。")
+        
 if __name__ == '__main__':
-    main()
+    # 自动运行（-a）失败时不再等回车，统一用非零退出码，便于 cron/脚本判断。
+    # 生成 tasklist：python main.py --generate-tasklist
+    try:
+        main()
+    except SystemExit:
+        raise
+    except BaseException:
+        traceback.print_exc()
+        raise SystemExit(2)

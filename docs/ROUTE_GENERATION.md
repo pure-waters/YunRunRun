@@ -2,14 +2,14 @@
 
 此模式把一条**已有轨迹**形变成一条新的二维轨迹，并补齐上传所需的时间、累计距离、步数与配速。它不识别地图、不做路径规划，也不判断道路是否可通行：输出形状完全由来源轨迹 + 形变参数 + 种子决定。底图和参数不能证明实际运动发生，也不能保证服务端接受或成绩长期有效。
 
-算法（`yun_route.py`）：按弧长把来源重采样成 5.5m 等间距折线 → 沿法线做 OU 低频游走（跨道摆动）→ 叠加 x/y 二维相关漂移（定位噪声尺度）→ 叠加稀疏、指数衰减的偶发大偏移（约 1.2 次/km）→ 可选把几何长度校准到来源的 +3%。该实现与历史演示包同源，回归基准钉在 `tests/test_yun_route.py::test_deform_matches_demo_scale`（fch 来源 686 点 / 3.877 km）。
+算法（`yun_route.py`）：按弧长把来源重采样成 5.5m 等间距折线 → 沿法线做 OU 低频游走（跨道摆动）→ 叠加 x/y 二维相关漂移（定位噪声尺度）→ 叠加稀疏、指数衰减的偶发大偏移（约 1.2 次/km）→ 可选把几何长度校准到来源的 +3%。该实现与历史演示包同源，回归基准钉在 `tests/test_yun_route.py::test_deform_matches_source_scale`（洛阳来源 `tests/fixtures/deform/ly_source.json`：2.56 km → 467 点 / 2.637 km）。
 
 ## 离线生成与配置
 
 仅生成文件，无须账号，也不会读取 `config.ini`：
 
 ```powershell
-python tools/generate_route.py --config examples/routes/deform_xc.json --output work_dir/route_preview.geojson
+python tools/generate_route.py --config examples/routes/my_route.json --output work_dir/route_preview.geojson
 ```
 
 输出 GeoJSON 和同名 `route_preview.task.json`（逐点与汇总检查用，`ts=0` 是尚未运行的占位符）。输出文件已存在时会拒绝覆盖。可用支持 GeoJSON 的本地查看器预览，不要把调试文件放入 `tasks_*` 后通过旧打表入口运行。
@@ -18,7 +18,7 @@ python tools/generate_route.py --config examples/routes/deform_xc.json --output 
 
 | 配置项 | 示例/默认 | 含义 |
 |---|---|---|
-| `source_json` | `../../tasks_xc/tasklist_4.json` | 形变来源，**任选**：tasklist（`data.pointsList[*].point`）、GeoJSON LineString/FeatureCollection、裸坐标列表 `[[lon,lat],…]` |
+| `source_json` | `../../tasks_ly/tasklist_0.json` | 形变来源，**任选**：tasklist（`data.pointsList[*].point`）、GeoJSON LineString/FeatureCollection、裸坐标列表 `[[lon,lat],…]` |
 | `coordinate_system` | `GCJ-02` | 必须明确声明；不执行坐标转换。离线工具也支持 WGS84，当前主流程要求 GCJ-02 |
 | `distance_m` | 不设置 | **精确**总里程（米）：给了就钉住该值、不再抽签；不得超过形变后可用长度 |
 | `min_distance_m` / `max_distance_m` | 不设置 | 里程区间：不给 `distance_m` 时总里程 = 来源里程 ×(1±`length_offset_pct`) 抽签，必须落在区间内，否则换种子重抽，连续 5 次不中直接报错 |
@@ -63,13 +63,13 @@ python tools/generate_route.py --config examples/routes/deform_xc.json --output 
 先用本地测试账号配置和本地 `getHomeRunInfo` fixture 做假传输演练：
 
 ```powershell
-python main.py --dry-run -f tests/fixtures/test_config.ini --dry-home examples/routes/dry_home.json --route-config examples/routes/deform_xc.json
+python main.py --dry-run -f tests/fixtures/test_config.ini --dry-home examples/routes/dry_home.json --route-config examples/routes/my_route.json
 ```
 
 这条命令不联网、不登录、不等待真实跑步时长。fixture 仅用于演练，不代表学校实际要求。正式入口：
 
 ```powershell
-python main.py -f config.ini --route-config examples/routes/deform_xc.json
+python main.py -f config.ini --route-config examples/routes/my_route.json
 ```
 
 交互模式（`python main.py` 登录后选"轨迹来源 → 合成轨迹"）等价于上面的 `--route-config`，菜单直接列出 `examples/routes/*.json`。`--route-config` 不能与 `-t` 或 `-d` 混用。路线文件不会自动写回账号配置。

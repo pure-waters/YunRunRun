@@ -1,13 +1,13 @@
 {
   "code": 200,
-  "msg": "offline fixture only",
+  "msg": "offline fixture only（合成方案演练用：放宽里程/步频区间）",
   "data": {
     "cralist": [
       {
         "id": 900001,
-        "schoolId": "100",
+        "schoolId": "197",
         "raType": "T1",
-        "raRunArea": "A",
+        "raRunArea": "洛阳理工学院",
         "raDislikes": 0,
         "raSingleMileageMin": 2.0,
         "raSingleMileageMax": 3.0,

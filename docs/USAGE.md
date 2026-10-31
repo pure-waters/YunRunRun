@@ -61,9 +61,24 @@ pip install opencv-python       # 可选：仅当使用 --face-video 视频源�
 
 ```bash
 python main.py                 # 交互式：选配置→(可选)登录→选任务表→执行
-python main.py -f cfg.ini -t tasks_xc -a          # 指定配置/任务目录，全自动
-python main.py -d              # 轨迹漂移（tools/drift.py）
+python main.py -f cfg.ini -t tasks_ly -a          # 指定配置/任务目录，全自动（用配置里的 token）
+python main.py --login -a -t tasks_ly             # 先登录再跑（token 过期时用）
+python main.py -a --task-file tasklist_0.json     # 精确指定回放哪张表
+python main.py -a --log-file                      # 逐请求审计写入 work_dir/logs/run-<时间>.log
+python main.py -a --force                         # 跳过 start 前的本地预检
+python main.py -d              # 轨迹漂移（tools/drift.py，已弃用）
 ```
+
+- **配置**：`config.ini` 含明文密码，不入库；从 `config.example.ini` 复制后填写。
+- **start 前预检**：任务有效期（`raStartTime/raEndTime`）、可跑时段
+  （`dayStartTime/dayEndTime`）、星期（`raWeekTime`）、已完成次数
+  （`qualifiedCount/raTargetNum`）；字段缺失则跳过该项，不通过即停止，`--force` 跳过。
+- **选表**：只挑能通过校验的 json（含 `data.pointsList`/`recordMileage`），
+  在 `start` 之前完成选择与校验，避免"先建记录再报任务表非法"。
+- **围栏**：服务端任务里的 `fence` 会自动解析；生成轨迹越界直接失败，
+  打表回放只打印一次提示（不阻断）。
+- **时钟**：运行中墙钟/单调钟差值超过 5s 立即停止（系统校时或休眠会让 ts 与间隔对不上）。
+- **重试**：只有"连接没建立起来"会重试一次；读超时/中途断开不重放（避免重复记录）。
 
 - 旧版 `EasyAutoRunServer`（`tools/EasyAutoRunServer/run.sh`）与
   `python history.py`（拉历史记录，见 `history.md`）保持可用。

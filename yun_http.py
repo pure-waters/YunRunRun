@@ -500,8 +500,29 @@ class _FakeResponse:
         self.text = text
 
 
+_CONNECT_FAILURE_MARKERS = (
+    "NewConnectionError", "Failed to establish a new connection",
+    "NameResolutionError", "Connection refused", "Name or service not known",
+    "Temporary failure in name resolution",
+)
+
+
+def _is_connect_failure(exc: Exception) -> bool:
+    """区分"连接没建起来"（请求确定未送达）与其它网络异常（可能已被处理）。"""
+    text = f"{exc!r} {exc.args!r}"
+    return any(marker in text for marker in _CONNECT_FAILURE_MARKERS)
+
+
 def _real_transport(url: str, data: str, headers: dict, timeout) -> Any:
-    return _get_session().post(url=url, data=data, headers=headers, timeout=timeout)
+    session = _get_session()
+    try:
+        return session.post(url=url, data=data, headers=headers, timeout=timeout)
+    except requests.ConnectionError as exc:
+        # 只有"连接建立失败"可以安全重试一次：请求确定没送到服务端。
+        # 读超时/连接中途断开可能已被服务端处理，重放会造成重复记录，一律不重试。
+        if not _is_connect_failure(exc):
+            raise
+        return session.post(url=url, data=data, headers=headers, timeout=timeout)
 
 
 _SESSION: Optional[requests.Session] = None
@@ -578,6 +599,18 @@ class YunClient:
         self.legacy_uuid = legacy_uuid
         self.last_ctx: Optional[RequestContext] = None
         self.sent: list = []  # 每次请求的 (router/url, ctx)；输出前请 redact headers
+        # 可选审计钩子：callable(router, obj, error, elapsed_s)。只在 post_json 里调用，
+        # 钩子自身异常一律吞掉（审计不能影响主流程）。
+        self.audit: Optional[Callable[..., None]] = None
+
+    def _audit(self, router, obj=None, error=None, elapsed=None):
+        hook = getattr(self, "audit", None)
+        if hook is None:
+            return
+        try:
+            hook(router, obj, error, elapsed)
+        except Exception:  # noqa: BLE001 - 审计失败不得中断业务
+            pass
 
     # ---- 上下文：每请求新 uuid(未固定时)/utc/sign/key 三者一致绑定 ----
     def new_context(self, fixed_envelope: bool = False) -> RequestContext:
@@ -632,12 +665,19 @@ class YunClient:
     def post_json(self, router: str, json_text: str = "", raw_bytes: Optional[bytes] = None,
                   absolute_url: Optional[str] = None, fixed_envelope: bool = False,
                   raise_on_business_code: bool = False) -> dict:
-        text = self.post(router, json_text=json_text, raw_bytes=raw_bytes,
-                         absolute_url=absolute_url, fixed_envelope=fixed_envelope)
+        started = self.mono()
+        try:
+            text = self.post(router, json_text=json_text, raw_bytes=raw_bytes,
+                             absolute_url=absolute_url, fixed_envelope=fixed_envelope)
+        except Exception as exc:  # noqa: BLE001 - 记录后原样抛给调用方
+            self._audit(router, error=exc, elapsed=self.mono()-started)
+            raise
         try:
             obj = json.loads(text)
         except json.JSONDecodeError as exc:
+            self._audit(router, error=exc, elapsed=self.mono()-started)
             raise DecodeException(f"响应不是 JSON: {safe_snippet(text)}") from exc
+        self._audit(router, obj=obj, elapsed=self.mono()-started)
         if raise_on_business_code and obj.get("code") != 200:
             raise BusinessException(obj.get("code"), obj.get("msg", ""), obj)
         return obj

@@ -12,7 +12,7 @@ for task_file in ./configs/*.ini; do
     task_name=$(basename "$task_file" .ini)
     log_file="./log/record_${task_name}.log"
     
-    nohup python ../../main.py -f="$task_file" -a -t=../../tasks_fch > "$log_file" 2>&1 &
+    nohup python ../../main.py -f="$task_file" -a -t=../../tasks_ly > "$log_file" 2>&1 &
     
     echo $! >> $pid_file
 done

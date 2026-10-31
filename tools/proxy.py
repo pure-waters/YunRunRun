@@ -10,6 +10,17 @@ import configparser
 import sys
 sys.path.append("..")
 from main import *
+
+# 抓包只处理"本项目配置的那所学校"的流量：从 config.ini [Yun] school_host 取主机名，
+# 不再硬编码某一所学校的 IP/端口。改了学校只需改 config.ini。
+_CONF_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config.ini")
+_conf = configparser.ConfigParser()
+_conf.read(_CONF_PATH, encoding="utf-8")
+SCHOOL_HOST = _conf.get("Yun", "school_host", fallback="").strip()
+SCHOOL_NETLOC = SCHOOL_HOST.split("://", 1)[-1].rstrip("/")
+if not SCHOOL_NETLOC:
+    raise SystemExit("config.ini [Yun] school_host 未配置，无法确定要抓哪所学校的流量")
+print(f"[proxy] 只抓 {SCHOOL_NETLOC} 的流量（来自 config.ini school_host）")
 def decode(key_enc,data,use_gzip):
     use_gzip_str = str(use_gzip).lower()
     result = subprocess.run(
@@ -59,13 +70,13 @@ class Yun:
             file_count = 0
         return file_count
     def request(flow: mitmproxy.http.HTTPFlow) -> None:
-        if "210.45.246.53:8080" not in flow.request.pretty_url:
+        if SCHOOL_NETLOC not in flow.request.pretty_url:
             flow.live = False
 
     def response(self, flow: mitmproxy.http.HTTPFlow):
         
         req_url = flow.request.url
-        if "210.45.246.53:8080" in req_url :
+        if SCHOOL_NETLOC in req_url :
             
             if(self.saved == False and match_str(req_url,["getStudentInfo","AppSysMsgApi","homePageApi","crsReocordInfo"])):
                 
@@ -87,7 +98,7 @@ class Yun:
                 default_key =  "ruC9+TPTkI3YzJTfbuFz9A=="
                 CipherKeyEncrypted = "BIQWEosEECsZ6WdwU1lTkkLAXeN+t2rgDytWN+wMYKAXfDni7XUsfGcxsfQVCPrDrO73Wl6ZJd+/bJN+454r7W3XtWkF0SrqQ+khtaqOV9feXaNtvIB13ACUaWXtYEczSHenDnFfwqR0Y+YnHc+6ml+WY+oed3MfHg=="
                 def proxy_post(data, headers, isBytes=False):   #对default_post函数的模仿
-                    url = "http://210.45.246.53:8080/login/getStudentInfo"
+                    url = SCHOOL_HOST.rstrip("/") + "/login/getStudentInfo"
                     data_json = {
                         "cipherKey":CipherKeyEncrypted,
                         "content":encrypt_sm4(data, b64decode(default_key),isBytes=isBytes)
