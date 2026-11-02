@@ -1,11 +1,13 @@
-__pycache__
-.pytest_cache/
-.venv/
-work_dir/
-t.py
-cfg_my.ini
-t.ipynb
-show.json
-
-# 本地凭据（含明文密码/token），不入库；模板见 config.example.ini
+# 敏感配置
 config.ini
+
+# 本地运行产物
+work_dir/
+tmp/
+web_send/
+dry_run_home.json
+tasks_ly/
+
+# 生成的轨迹（保留模板 my_route.json）
+examples/routes/my_route_*.json
+examples/routes/generated_*.json

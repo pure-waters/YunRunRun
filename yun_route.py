@@ -503,11 +503,17 @@ def generate_cfg(cfg, base_dir):
     """
     if not isinstance(cfg, dict):
         raise ValueError("路线配置必须为 JSON 对象")
+    # 引擎分派：缺省仍是 deform（旧 cfg 不改一个字就继续可用）；manual 见文件末尾。
+    engine = cfg.get("engine", "deform")
+    if engine == "manual":
+        return manual_route(cfg)
+    if engine != "deform":
+        raise ValueError(f"未知 engine：{engine!r}（可选 deform / manual）")
     legacy = sorted(set(cfg) & LEGACY_V4_KEYS)
     if legacy:
         raise ValueError(f"V4 合成参数已移除：{legacy}；请改用 source_json + deform_profile"
                          "（见 README §3.4，旧 cfg 需按新键改写）")
-    allowed = {"source_json", "coordinate_system", "distance_m", "pace_min_km", "cadence_spm",
+    allowed = {"engine", "source_json", "coordinate_system", "distance_m", "pace_min_km", "cadence_spm",
                "sample_seconds", "seed", "allowed_polygon_geojson", "deform_profile",
                "min_distance_m", "max_distance_m", "pace_offset_pct", "cadence_offset_pct",
                "length_offset_pct"}
@@ -630,3 +636,382 @@ def geojson(task):
         {"type": "Feature", "properties": {"duration_s": task["data"]["duration"]},
          "geometry": {"type": "LineString", "coordinates": [
              list(map(float, p["point"].split(','))) for p in task["data"]["pointsList"]]}}]}
+
+
+# ============================================================ manual 引擎
+# 手动打点（anchor）→ 保锚点平滑抖动 → 上传任务表。
+#
+# 与 deform 的分工：
+#   * deform 形变一条**已有轨迹**，不保证经过任何指定点（只保证形状像人跑）；
+#   * manual 只吃用户在地图上点的少量锚点（可含服务端打卡点），先按 5~7m 线性
+#     插值补密，再叠加平滑抖动场；抖动在锚点附近被夹到 anchor_tolerance_m 以内
+#     （默认 5m，0 才是逐字穿过），离锚点远了才放开到正常幅度——所以路线是
+#     "从打点附近经过"，而不是每个打点上都硬拐一下。
+#
+# 抖动 = 沿法线的 OU 游走（跨道摆动）+ 二维相关漂移（定位噪声），两者都乘同一个
+# 窗函数；单步位移另有 0.35×spacing 的斜率限幅，避免相邻点反向折返成尖刺。
+#
+# 纯本地计算：不读账号、不联网。时间是按配速从**几何里程**推出来的整数秒
+# （runTime 严格递增），因此逐点 speed 与总体配速自洽。
+MANUAL_LIMITS = {
+    "spacing_m": (6.0, 4.0, 7.0),            # 用户要求约 5~7m 一点
+    "jitter_sigma_m": (1.20, 0.0, 6.0),      # 法向 OU 游走强度
+    "jitter_tau_m": (80.0, 5.0, 2000.0),     # 法向相关长度
+    "jitter_max_m": (3.00, 0.0, 8.0),        # 法向硬限幅
+    "drift_sigma_m": (0.60, 0.0, 4.0),       # 二维漂移强度
+    "drift_tau_m": (150.0, 5.0, 2000.0),     # 二维漂移相关长度
+    "anchor_fade_m": (15.0, 3.0, 60.0),      # 锚点附近收敛半径
+    "anchor_tolerance_m": (5.0, 0.0, 20.0),  # 打点处允许的偏移（0=严格穿过打点）
+}
+MANUAL_DEFAULT = {k: v[0] for k, v in MANUAL_LIMITS.items()}
+
+MANUAL_CFG_KEYS = set(MANUAL_DEFAULT) | {
+    "engine", "coordinate_system", "anchors", "checkin_points", "pace_min_km",
+    "cadence_spm", "seed", "distance_m",
+    # 里程要求（面板从服务端任务 + config 偏移算出来后注入；也可写进 cfg 供 --route-config 复现）
+    "min_distance_m", "max_distance_m", "auto_loop", "max_laps",
+}
+
+# 首尾相接判定：最后一点离第一点不超过该距离，就当作"闭合一圈"。
+CLOSE_TOL_M = 30.0
+# 自动补圈上限：防止把 100m 的小圈补成 50 圈（也没必要，正常场地一圈 300~800m）。
+MAX_AUTO_LAPS = 12
+
+# 打卡点与生成点的匹配距离：只有路线**真的**含该顶点才算命中，不按"经过附近"记账。
+CHECKIN_MATCH_M = 1.5
+
+
+def manual_profile_of(cfg):
+    """读取 manual 抖动参数（缺省用 MANUAL_DEFAULT，越界报错）。"""
+    profile = {}
+    for key, (default, low, high) in MANUAL_LIMITS.items():
+        profile[key] = number(cfg, key, default, low, high) if key in cfg else default
+    return profile
+
+
+def points_from_raw(value, key="anchors", minimum=2):
+    """把 ``["lon,lat" | [lon,lat], ...]`` 校验成 ``[(lon,lat), ...]``。
+
+    相邻重复点（同一位置多次点击 / 吸附到已有锚点）直接忽略，不当作独立锚点。
+    """
+    if value is None:
+        value = []
+    if not isinstance(value, (list, tuple)):
+        raise ValueError(f"{key} 必须是点列表")
+    out = []
+    for i, item in enumerate(value):
+        if isinstance(item, str):
+            parts = item.split(",")
+        elif isinstance(item, (list, tuple)) and len(item) >= 2:
+            parts = list(item[:2])
+        else:
+            raise ValueError(f"{key}[{i}] 必须是 'lon,lat' 字符串或 [lon,lat]")
+        try:
+            lon, lat = float(parts[0]), float(parts[1])
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{key}[{i}] 坐标不是数字") from exc
+        if not (math.isfinite(lon) and math.isfinite(lat)):
+            raise ValueError(f"{key}[{i}] 坐标不是有限数")
+        if not -180.0 <= lon <= 180.0 or not -90.0 <= lat <= 90.0:
+            raise ValueError(f"{key}[{i}] 经纬度越界")
+        if out and distance(out[-1], (lon, lat)) < 0.5:
+            continue
+        out.append((lon, lat))
+    if len(out) < minimum:
+        raise ValueError(f"{key} 至少需要 {minimum} 个不重复的点")
+    return out
+
+
+def _densify(xy, spacing_m):
+    """投影坐标折线 -> (等距点列, 锚点下标)。锚点逐点保留，不会被插值丢掉。"""
+    out = [xy[0]]
+    anchors = [0]
+    for a, b in zip(xy, xy[1:]):
+        seg = math.dist(a, b)
+        n = max(1, int(round(seg/spacing_m)))
+        for k in range(1, n):
+            f = k/n
+            out.append((a[0]+(b[0]-a[0])*f, a[1]+(b[1]-a[1])*f))
+        out.append(b)
+        anchors.append(len(out)-1)
+    return out, anchors
+
+
+def _smoothstep(d, fade):
+    """0→1 的平滑窗：d=fade 处斜率为 0，锚点处值与其导数都为 0（不起折角）。"""
+    if fade <= 1e-9:
+        return 1.0
+    if d >= fade:
+        return 1.0
+    t = max(0.0, d/fade)
+    return t*t*(3.0-2.0*t)
+
+
+def _manual_build(anchors, profile, seed):
+    """锚点 -> (点列, 诊断)。抖动在锚点附近收敛到容差内（默认不要求逐字穿过）。"""
+    spacing = float(profile["spacing_m"])
+    tol = float(profile["anchor_tolerance_m"])
+    fwd, inv = local_projection(anchors)
+    xy = [fwd(p) for p in anchors]
+    dense, anchor_idx = _densify(xy, spacing)
+    ss = cumulative_xy(dense)
+    anchor_s = [ss[i] for i in anchor_idx]
+    rng = random.Random(int(seed) ^ 0x51F3)
+    lane = ou_distance(rng, ss, profile["jitter_tau_m"], profile["jitter_sigma_m"])
+    dx = ou_distance(rng, ss, profile["drift_tau_m"], profile["drift_sigma_m"])
+    dy = ou_distance(rng, ss, profile["drift_tau_m"], profile["drift_sigma_m"])
+    # 远离锚点时允许的最大偏移；保证 >= 2*tol，锚点处才夹得住
+    far = max(profile["jitter_max_m"]*2.0, tol*2.0, 1e-6)
+    load = 0.35*spacing
+    ox = oy = 0.0
+    max_off = 0.0
+    out = []
+    for i, (p, s) in enumerate(zip(dense, ss)):
+        j = bisect.bisect_left(anchor_s, s)
+        near = [anchor_s[k] for k in (j-1, j) if 0 <= k < len(anchor_s)]
+        w = _smoothstep(min(abs(s-x) for x in near), profile["anchor_fade_m"])
+        _, nrm = tangent_normal(dense, i)
+        lane_i = max(-profile["jitter_max_m"], min(profile["jitter_max_m"], lane[i]))
+        tx = nrm[0]*lane_i+dx[i]
+        ty = nrm[1]*lane_i+dy[i]
+        # 指数跟随 + 单步限幅：抖动不会在相邻两点之间反向折返成尖刺。
+        ox += max(-load, min(load, tx-ox))
+        oy += max(-load, min(load, ty-oy))
+        # 锚点处把偏移夹到「容差」以内，远离锚点逐步放开（tol=0 等价于严格穿过）。
+        cap = tol + (far-tol)*w
+        mag = math.hypot(ox, oy)
+        if mag > cap:
+            scale = 0.0 if cap <= 0.0 else cap/mag
+            ox *= scale
+            oy *= scale
+        max_off = max(max_off, math.hypot(ox, oy))
+        out.append(inv((p[0]+ox, p[1]+oy)))
+    points = [(round(lon, 8), round(lat, 8)) for lon, lat in out]
+    dev = max((distance(points[i], anchors[k]) for k, i in enumerate(anchor_idx)),
+              default=0.0)
+    return points, {"spacing_m": spacing, "max_offset_m": round(max_off, 3),
+                    "anchor_count": len(anchors),
+                    "anchor_max_deviation_m": round(dev, 3)}
+
+
+def manual_geometry(anchors, *, seed=31337, profile=None):
+    """公开的纯几何 API：锚点 -> 抖动后的点列（不做里程/时间，不生成任务表）。"""
+    merged = manual_profile_of(profile or {})
+    points, _ = _manual_build(points_from_raw(anchors), merged, int(seed))
+    return points
+
+
+def snap_anchors(anchors, checkins, tolerance_m=25.0):
+    """把落在折线 tolerance_m 内的打卡点插进锚点序列（按路径顺序）。
+
+    返回 ``(anchors2, report)``。插入的是打卡点本身，因此后续抖动会在该点归零——
+    "经过打卡点"由几何保证，而不是事后标注。
+    """
+    base = list(anchors)
+    if not checkins:
+        return base, {"inserted": [], "skipped": []}
+    fwd, _ = local_projection(base+list(checkins))
+    xy = [fwd(p) for p in base]
+    dense, idx_anchor = _densify(xy, 2.0)
+    ss = cumulative_xy(dense)
+    anchor_s = [ss[i] for i in idx_anchor]
+    items = [(anchor_s[k], tuple(base[k]), "anchor") for k in range(len(base))]
+    inserted, skipped = [], []
+    for c in checkins:
+        q = fwd(c)
+        best_i, best_d = 0, float("inf")
+        for i, p in enumerate(dense):
+            d = math.dist(p, q)
+            if d < best_d:
+                best_d, best_i = d, i
+        s = ss[best_i]
+        if best_d > tolerance_m:
+            skipped.append({"point": c, "distance_m": round(best_d, 1),
+                            "reason": "离折线超过吸附半径"})
+            continue
+        if any(abs(s-x) < 1.0 for x in anchor_s):
+            skipped.append({"point": c, "distance_m": round(best_d, 1),
+                            "reason": "已与锚点重合"})
+            continue
+        if any(abs(s-x[0]) < 1.0 for x in items if x[2] == "checkin"):
+            continue
+        items.append((s, tuple(c), "checkin"))
+        inserted.append({"point": c, "distance_m": round(best_d, 1)})
+    items.sort(key=lambda x: x[0])
+    return [x[1] for x in items], {"inserted": inserted, "skipped": skipped}
+
+
+def distance_to_route(points, target):
+    """点到折线的最短距离（米）与最近线段起点下标。"""
+    if not points:
+        return float("inf"), 0
+    if len(points) == 1:
+        return distance(points[0], target), 0
+    fwd, _ = local_projection([target]+list(points))
+    q = fwd(target)
+    xy = [fwd(p) for p in points]
+    best, best_i = float("inf"), 0
+    for i, (a, b) in enumerate(zip(xy, xy[1:])):
+        vx, vy = b[0]-a[0], b[1]-a[1]
+        wx, wy = q[0]-a[0], q[1]-a[1]
+        vv = vx*vx+vy*vy
+        t = 0.0 if vv <= 1e-12 else max(0.0, min(1.0, (wx*vx+wy*vy)/vv))
+        px, py = a[0]+t*vx, a[1]+t*vy
+        d = math.hypot(q[0]-px, q[1]-py)
+        if d < best:
+            best, best_i = d, i
+    return best, best_i
+
+
+def match_checkins(points, checkins, tolerance_m=None):
+    """打卡点是否被"经过"：按到折线的**最短距离**判定，不要求路线里有同一个顶点。
+
+    打点本身也允许偏移（anchor_tolerance_m），所以"经过"的判据必须是距离而非顶点相等。
+    """
+    tol = CHECKIN_MATCH_M if tolerance_m is None else float(tolerance_m)
+    hits = []
+    for c in checkins:
+        d, idx = distance_to_route(points, c)
+        ok = d <= tol
+        hits.append({"point": c, "distance_m": round(d, 3),
+                     "index": idx if ok else None, "matched": ok})
+    return hits
+
+
+def _manual_timeline(points, pace_min_km, cadence_spm):
+    """几何里程 -> 整数秒时间轴（严格递增）与累计步数。"""
+    lengths = cumulative(points)
+    rows = []
+    prev_t = -1
+    for i, m in enumerate(lengths):
+        t = int(round(m/1000.0*pace_min_km*60.0))
+        if i > 0 and t <= prev_t:
+            t = prev_t+1
+        prev_t = t
+        rows.append((m, t, int(math.floor(t*cadence_spm/60.0))))
+    return rows, lengths
+
+
+def manual_route(cfg):
+    """manual 引擎入口：锚点配置 -> 与 deform 同构的任务表（``generate_cfg`` 分派）。"""
+    legacy = sorted(set(cfg) & LEGACY_V4_KEYS)
+    if legacy:
+        raise ValueError(f"V4 合成参数已移除：{legacy}；manual 引擎请用 anchors + 抖动参数")
+    unknown = sorted(set(cfg)-MANUAL_CFG_KEYS)
+    if unknown:
+        raise ValueError(f"未知的 manual 配置项：{unknown}")
+    coordinate_system = cfg.get("coordinate_system")
+    if coordinate_system not in ("GCJ-02", "WGS84"):
+        raise ValueError("必须明确 coordinate_system 为 GCJ-02 或 WGS84；本工具不转换坐标系")
+    anchors = points_from_raw(cfg.get("anchors"), "anchors", minimum=2)
+    checkin_coords = points_from_raw(cfg.get("checkin_points") or [], "checkin_points", minimum=0)
+    raw_checkins = [c if isinstance(c, str) else f"{c[0]:.6f},{c[1]:.6f}"
+                    for c in (cfg.get("checkin_points") or [])]
+    profile = manual_profile_of(cfg)
+    if cfg.get("seed") == "auto":
+        # 52 位以内：JSON 数字能原样穿过浏览器（JS 的 number 只有 2^53 精度）
+        seed = secrets.randbits(52)
+    else:
+        seed = number(cfg, "seed", 31337, 0, 2**63-1, True)
+    pace = number(cfg, "pace_min_km", 5.0, 2.0, 30.0)
+    cadence = number(cfg, "cadence_spm", 170.0, 60.0, 260.0)
+    min_m = (number(cfg, "min_distance_m", 0.0, 0.0, 200000.0)
+             if cfg.get("min_distance_m") not in (None, "") else None)
+    max_m = (number(cfg, "max_distance_m", 0.0, 0.0, 200000.0)
+             if cfg.get("max_distance_m") not in (None, "") else None)
+    auto_loop = bool(cfg.get("auto_loop", True))
+    max_laps = (number(cfg, "max_laps", MAX_AUTO_LAPS, 1, 60, True)
+                if cfg.get("max_laps") is not None else MAX_AUTO_LAPS)
+
+    # 首尾相接：把最后一点对齐到第一点，多圈拼接处才不留缝。
+    closed = len(anchors) >= 4 and distance(anchors[0], anchors[-1]) <= CLOSE_TOL_M
+    if closed:
+        anchors = anchors[:-1] + [anchors[0]]
+    ring = anchors[:-1] if closed else anchors
+
+    def build(laps):
+        """一次成型：把环线重复 laps 遍再抖——同一段 OU 过程跨圈连续，接缝不跳。"""
+        chain = (ring*laps + [ring[0]]) if closed else anchors
+        return _manual_build(chain, profile, seed)
+
+    points, diag = build(1)
+    laps = 1
+    base_len = cumulative(points)[-1]
+    # 闭合圈且不够里程 → 沿同一条环线继续跑；同一次生成里每圈的抖动天然不同。
+    if closed and auto_loop and min_m and base_len > 0:
+        need = min(max_laps, max(1, int(math.ceil(min_m/base_len))))
+        if need > 1:
+            points, diag = build(need)
+            laps = need
+            while cumulative(points)[-1] + 1e-9 < min_m and laps < max_laps:
+                laps += 1
+                points, diag = build(laps)
+    rows, lengths = _manual_timeline(points, pace, cadence)
+    total = lengths[-1]
+    lap_length = total/laps if laps else total
+    gap_m = max(0.0, (min_m or 0.0) - total)
+    over_m = max(0.0, total - max_m) if max_m else 0.0
+    if total < 50.0:
+        raise ValueError("生成的轨迹不足 50 米：请多打几个点，或把点分散一些")
+    duration = rows[-1][1]
+    if duration <= 0:
+        raise ValueError("生成时长为 0：检查配速与里程")
+    exact = cfg.get("distance_m")
+    if exact is not None:
+        target = number(cfg, "distance_m", 0.0, 10.0, 50000.0)
+        if abs(total-target) > max(5.0, 0.02*target):
+            raise ValueError(
+                f"生成几何长度 {total:.1f} 米与 distance_m={target:.0f} 差超过 2%："
+                "可调整打点或去掉 distance_m（manual 引擎不缩放几何，避免破坏锚点）")
+
+    # 打点允许偏移，所以"经过打卡点"也按距离判（容差至少取打点容差）
+    checkin_tol = max(CHECKIN_MATCH_M, float(profile["anchor_tolerance_m"]))
+    hits = match_checkins(points, checkin_coords, checkin_tol)
+    manage_list = []
+    for i, hit in enumerate(hits):
+        manage_list.append({"point": raw_checkins[i] if i < len(raw_checkins) else "",
+                            "marked": "Y" if hit["matched"] else "N",
+                            "index": str(hit["index"]) if hit["matched"] else ""})
+
+    points_list = []
+    for i, ((m, t, steps), p) in enumerate(zip(rows, points)):
+        speed = '0.0' if i == 0 else client_speed(m-rows[i-1][0], t-rows[i-1][1])
+        points_list.append({
+            "point": f"{p[0]:.8f},{p[1]:.8f}", "runMileage": m, "runTime": t,
+            "runStep": steps, "speed": speed, "runStatus": "1",
+            "isFence": "Y", "isMock": False, "ts": "0",
+        })
+    data = {
+        "pointsList": points_list, "duration": duration,
+        "recordMileage": total/1000.0,
+        "recodeCadence": points_list[-1]["runStep"]*60.0/duration,
+        "recodePace": duration/60.0/(total/1000.0),
+        "recodeDislikes": sum(1 for m in manage_list if m["marked"] == "Y"),
+        "manageList": manage_list,
+    }
+    metadata = {
+        "synthetic": True, "engine": "manual", "coordinate_system": coordinate_system,
+        "seed": seed, "seed_text": str(seed),
+        "anchors": len(anchors), "points": len(points_list),
+        "spacing_m": round(diag["spacing_m"], 3),
+        "mean_step_m": round(total/max(1, len(points_list)-1), 3),
+        "geometry_chord_m": round(total, 3), "target_m": round(total, 3),
+        "pace_min_km": round(duration/60.0/(total/1000.0), 3), "cadence_spm": cadence,
+        "interval_s": round(duration/max(1, len(points_list)-1), 3),
+        "max_offset_m": diag["max_offset_m"],
+        # 打点不再要求逐字穿过：给出容差与"实际最大偏离"
+        "anchor_error_m": diag["anchor_max_deviation_m"],
+        "anchor_max_deviation_m": diag["anchor_max_deviation_m"],
+        "anchor_tolerance_m": float(profile["anchor_tolerance_m"]),
+        "checkin_tolerance_m": checkin_tol,
+        "jitter": dict(profile),
+        # 补圈与里程要求（面板据此判断"够不够要求"，approve 时会再核一次）
+        "closed": closed, "laps": laps, "lap_length_m": round(lap_length, 3),
+        "min_distance_m": min_m, "max_distance_m": max_m,
+        "mileage_gap_m": round(gap_m, 1), "mileage_over_m": round(over_m, 1),
+        "checkin_total": len(checkin_coords),
+        "checkin_matched": sum(1 for h in hits if h["matched"]),
+        "checkins": hits,
+        "server_verified": False,
+    }
+    return {"code": 200, "metadata": metadata, "data": data}

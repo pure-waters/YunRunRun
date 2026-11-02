@@ -10,17 +10,27 @@ main.py            入口 + 旧全局快照兼容层 + 跑步会话(Yun_For_New)
                    + 线上载荷投影(_build_split_body/_build_finish_body/_project_card_point)
 yun_http.py        协议边界：请求构造/信封加密/响应解码/脱敏/异常分类/假传输
 yun_face.py        人脸管线：图像处理/质量门(APK K() 等价)/比对状态机/窗口调度/输入源
+yun_route.py       轨迹合成：deform（形变已有轨迹）+ manual（手动打点、保锚点抖动）
+web.py             本地网页面板：信息配置/路线预览/执行日志/手动打点（只执行 PLAN）
 tools/Login.py     账号密码登录（学校目录探测 + 写回 config）
 tools/drift.py     轨迹漂移；tools/pace_changer.py 配速工具；tools/proxy.py 抓包辅助
 tools/getUrl_Id.py 学校地址/id 探测；history.py 历史记录拉取（显式注入客户端）
+live_probe.py      L1 准入探测（登录 + run/getRlStatus，不建记录）
+devinfo.py         真机助手：读 App 打在 logcat 里的明文请求/响应（不是抓包）
+gen_route.py       一次性脚本：硬编码打卡点生成 tasklist（不依赖高德）
 tools/EasyAutoRunServer/  旧定时批量启动壳（run.sh 仍走 main.py）
-tests/             99 项离线测试（无任何真实网络）
+tests/             全部离线测试（无任何真实网络）
 config.ini         设备/密钥/跑步参数；tasks_*/tasklist_*.json 任务表（抓包模板）
+examples/routes/   deform / manual 两种路线配置模板
 dry_run_home.json  --dry-run 的 getHomeRunInfo 假响应
 ```
 
 依赖方向：`main.py → yun_http.py`；`main.py → yun_face.py`（yun_face 不 import main）；
-`tools/Login.py → yun_http`。
+`main.py → yun_route.py`；`tools/Login.py → yun_http`；`web.py → yun_route`。
+`web.py` 不 import main：执行靠 subprocess 起 `python main.py`，读任务/登录靠
+`web.py --helper-task/--helper-login` 的**辅助子进程**（stdout 只有一行 JSON）。
+子进程解释器由 `python_exe()` 选：优先项目 `.venv`，否则当前解释器——面板因此可以在
+没有 requests/gmssl 的 Python 里启动（`uv run web.py` 与系统 `python web.py` 都行）。
 
 ## 2. 单请求生命周期（与 APK RetrofitService 拦截器等价）
 
@@ -150,6 +160,15 @@ recover_unfinished                o2(:3337-3368) 断点恢复分类（纯函数�
 9. 窗口触发时序：每批上传后批内逐点评估，非 APK 的按轨迹时间独立推进；
    同批内弹窗时刻受批次节奏影响（漏窗防护已兜底，时序差异如实记录）。
 10. 结束检查 url/list 仅供展示；isCheat=Y 优先停止，仅 isStandard=Y 自动结束。非 Y 停止是脚本策略，不代表客户端所有结束分支。
+11. manual 引擎的"像真人"只是几何/统计尺度近似：打点处偏移被夹在 `anchor_tolerance_m`
+    （默认 5m）以内、点间平滑摆动、里程按真实折线累计、时间按配速取整（逐点配速有 1 秒量化起伏）。
+    它不是步态模型，也不做道路可通行性判断。`distance_m` 只校验不缩放——缩放几何会破坏"贴近打点"。
+12. manual 的 `manageList` 只按"路线从打卡点附近经过"（距离 ≤ `max(1.5m, 打点容差)`）标 Y；
+    `--route-config` 路径仍按 main 的既有策略拒绝 `raDislikes > 0` 的任务，面板只做预警，不擅自放宽。
+13. manual 的自动补圈只对**闭合**路线生效，且目标是"够下限"，终值落在 `下限 ～ 下限+单圈`；
+    单圈过长导致越过上限时只警告（main 会在跑动中截断末点），不做几何缩放。
+14. 面板的地图搜索走**高德 Web 服务**（GCJ-02，与底图/打卡点同坐标系），需要 `[User] map_key`；
+    它会把搜索词和 key 发给高德，与"不联网"的离线约束不同，属于用户主动触发的操作。
 
 ## 8. 维护提示
 
